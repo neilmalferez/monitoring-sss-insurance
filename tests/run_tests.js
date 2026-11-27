@@ -528,6 +528,108 @@ function runTests() {
 
   assertNoRawDates([dash, empHist, csvExp, audit, boot, chkGrp, sssPrev, insPrev, sssPage1, insPage1, singleSss, singleIns]);
   console.log('PASS: Dashboard, Employee Lookup, Pagination, Cache Invalidation, Audit Logs, CSV Export, and zero raw Date instances');
+
+  // 9. Profile View APIs, Photo Upload Validation & Automatic Schema Migration
+  const myProf = gas.apiGetMyProfile(hrToken);
+  assert.strictEqual(myProf.ok, true);
+  assert.strictEqual(myProf.data.username, 'hr_staff');
+  assert.strictEqual(myProf.data.photo_data, '');
+
+  const profUpdate = gas.apiUpdateMyProfile(hrToken, { full_name: 'HR Coordinator', email: 'hr@pertserv.ph' });
+  assert.strictEqual(profUpdate.ok, true, profUpdate.error);
+  assert.strictEqual(profUpdate.data.user.full_name, 'HR Coordinator');
+  assert.strictEqual(profUpdate.data.user.email, 'hr@pertserv.ph');
+
+  const badEmail = gas.apiUpdateMyProfile(hrToken, { full_name: 'HR Coordinator', email: 'not-an-email' });
+  assert.strictEqual(badEmail.ok, false);
+
+  const validImg = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/';
+  const photoSave = gas.apiUpdateMyPhoto(hrToken, validImg);
+  assert.strictEqual(photoSave.ok, true, photoSave.error);
+  assert.strictEqual(photoSave.data.user.photo_data, validImg);
+
+  const bootAfterPhoto = gas.apiBootstrap(hrToken);
+  assert.strictEqual(bootAfterPhoto.ok, true);
+  assert.strictEqual(bootAfterPhoto.data.user.photo_data, validImg);
+  assert.strictEqual(bootAfterPhoto.data.user.full_name, 'HR Coordinator');
+
+  const badMime = gas.apiUpdateMyPhoto(hrToken, 'data:text/plain;base64,SGVsbG8=');
+  assert.strictEqual(badMime.ok, false);
+
+  const hugeImg = 'data:image/jpeg;base64,' + 'A'.repeat(46000);
+  const badSize = gas.apiUpdateMyPhoto(hrToken, hugeImg);
+  assert.strictEqual(badSize.ok, false);
+
+  const photoRemove = gas.apiUpdateMyPhoto(hrToken, '');
+  assert.strictEqual(photoRemove.ok, true);
+  assert.strictEqual(photoRemove.data.user.photo_data, '');
+
+  // Schema migration test: simulate older 11-column DB_Users missing photo_data
+  const usersSheet = mockSpreadsheet.getSheetByName('DB_Users');
+  usersSheet.data[0] = usersSheet.data[0].slice(0, 11);
+  gas.CacheService.getScriptCache().remove(gas.DB_READY_CACHE_KEY_);
+  gas.ensureDatabaseReady_();
+  assert.ok(usersSheet.data[0].includes('photo_data'), 'ensureDatabaseReady_ must append missing photo_data column');
+
+  // 10. Seeded Department Accounts & Combined ACCOUNTING Role
+  const allUsersList = gas.apiListUsers(adminToken);
+  assert.strictEqual(allUsersList.ok, true);
+  for (const seedU of ['admin', 'hr.staff', 'accounting.staff', 'bank.acctg', 'check.issuance', 'viewer']) {
+    assert.ok(allUsersList.data.some(u => u.username === seedU), `Missing seeded user ${seedU}`);
+  }
+  // Re-running setupDatabase() must be idempotent and keep admin's updated password
+  gas.setupDatabase();
+  const adminReLogin = gas.apiLogin('admin', 'NewAdmin#2026');
+  assert.strictEqual(adminReLogin.ok, true, 'setupDatabase must not overwrite admin password');
+
+  const acctgLogin = gas.apiLogin('accounting.staff', 'Accounting@2026');
+  assert.strictEqual(acctgLogin.ok, true, 'accounting.staff login failed');
+  const acctgToken = acctgLogin.data.token;
+
+  // ACCOUNTING cannot create new SSS claims
+  const acctgCreateFail = gas.apiSaveSss(acctgToken, {
+    claim_ref_no: 'SNEW_ACCT_FAIL',
+    ss_number: '07-1111111-1',
+    employee_name: 'FAIL',
+    client_project: 'VMC',
+    benefit_type: 'SB',
+    days_approved: 1,
+    amount_to_release: 500
+  });
+  assert.strictEqual(acctgCreateFail.ok, false);
+
+  // ACCOUNTING can update BOTH Bank (Sec 2) and Check (Sec 3) on existing claim, while HR fields are stripped
+  const acctgSssId = afterSave.data.items.find(x => x.claim_ref_no === 'SNEW_CACHE_INVALIDATION_TEST').id;
+  const acctgUpdateOk = gas.apiSaveSss(acctgToken, {
+    id: acctgSssId,
+    employee_name: 'SHOULD NOT OVERWRITE',
+    amount_to_release: 999999,
+    bank_status: 'CREDITED TO BDO',
+    date_credited: '2026-07-05',
+    amount_credited: 2500,
+    date_of_check: '2026-07-06',
+    check_amount: 2500,
+    check_no: '2000009999'
+  });
+  assert.strictEqual(acctgUpdateOk.ok, true, acctgUpdateOk.error);
+  assert.strictEqual(acctgUpdateOk.data.record.employee_name, 'CACHE TEST, USER');
+  assert.strictEqual(acctgUpdateOk.data.record.amount_to_release, 2500);
+  assert.strictEqual(acctgUpdateOk.data.record.bank_status, 'CREDITED TO BDO');
+  assert.strictEqual(acctgUpdateOk.data.record.check_no, '2000009999');
+  assert.strictEqual(acctgUpdateOk.data.record.workflow_stage, 'COMPLETED');
+
+  // ACCOUNTING can update Bank & Closure on Insurance
+  const acctgInsUpdate = gas.apiSaveInsurance(acctgToken, {
+    id: insPage1.data.items[0].id,
+    bank_status: 'CREDITED TO METROBANK',
+    date_credited: '2026-07-08',
+    amount_credited: insPage1.data.items[0].amount_released,
+    final_status: 'DONE'
+  });
+  assert.strictEqual(acctgInsUpdate.ok, true, acctgInsUpdate.error);
+
+  assertNoRawDates([myProf, profUpdate, photoSave, bootAfterPhoto, photoRemove, allUsersList, acctgLogin, acctgUpdateOk, acctgInsUpdate]);
+  console.log('PASS: Profile APIs, photo upload, schema migration, seeded accounts & combined ACCOUNTING role');
   console.log('\nALL TESTS PASSED!');
 }
 

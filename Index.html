@@ -6,6 +6,9 @@
   <?!= include('Styles'); ?>
 </head>
 <body class="page-body">
+  <div id="top-loading-bar" class="top-loading-bar hidden" aria-hidden="true">
+    <div class="top-loading-bar-inner"></div>
+  </div>
   <?!= include('login'); ?>
 
   <!-- Main Authenticated App Shell -->
@@ -15,28 +18,29 @@
         <div class="sidebar-logo-box">
           <img
             class="sidebar-logo"
-            src="https://lh3.googleusercontent.com/d/1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU=w400"
-            onerror="this.onerror=null;this.src='https://drive.google.com/thumbnail?id=1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU&sz=w400';"
+            src="https://lh3.googleusercontent.com/d/1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU=s0"
+            onerror="this.onerror=null;this.src='https://lh3.googleusercontent.com/d/1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU=w400-rp';"
             referrerpolicy="no-referrer"
             alt="System Logo"
           />
         </div>
         <div class="sidebar-brand-text">
-          <div class="sidebar-brand-kicker">Monitoring &amp; Management</div>
+          <div class="sidebar-brand-kicker">Claims Portal</div>
           <div class="sidebar-brand-title">SSS &amp; Insurance</div>
         </div>
       </div>
       <nav id="sidebar-nav" class="sidebar-nav"></nav>
       <div class="sidebar-footer">
-        <div id="sidebar-user-name" class="sidebar-user-name"></div>
-        <div id="sidebar-user-role" class="sidebar-user-role"></div>
-        <div style="margin-top:10px;display:flex;gap:6px;">
-          <button id="btn-open-pwd" type="button" class="btn btn-sm" style="flex:1;background:#1e293b;color:#e2e8f0;border-color:#334155;">Password</button>
-          <button id="btn-logout" type="button" class="btn btn-sm" style="flex:1;background:#1e293b;color:#fca5a5;border-color:#334155;">
-            <span id="logout-btn-icon"></span>
-            <span data-btn-label>Sign Out</span>
-          </button>
-        </div>
+        <button id="sidebar-user-card" type="button" class="sidebar-user-card" title="Open My Profile">
+          <div class="sidebar-avatar avatar-round">
+            <img id="sidebar-avatar-img" class="sidebar-avatar-img avatar-round hidden" alt="Profile" />
+            <span id="sidebar-avatar-initials" class="sidebar-avatar-initials"></span>
+          </div>
+          <div class="sidebar-user-meta">
+            <div id="sidebar-user-name" class="sidebar-user-name"></div>
+            <div id="sidebar-user-role" class="sidebar-user-role"></div>
+          </div>
+        </button>
       </div>
     </aside>
 
@@ -47,11 +51,19 @@
           <div id="page-subtitle" class="page-subtitle"></div>
         </div>
         <div class="page-actions">
-          <span id="header-role-chip" class="role-chip"></span>
-          <button id="btn-refresh" type="button" class="btn btn-sm">Refresh</button>
+          <span id="header-loading-indicator" class="loading-pill" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="header-loading-label">Ready</span>
+          </span>
+          <button id="btn-refresh" type="button" class="btn btn-sm"><span data-btn-label>Refresh</span></button>
+          <button id="header-logout-btn" type="button" class="btn btn-sm btn-outline-danger">
+            <span id="header-logout-icon"></span>
+            <span data-btn-label>Sign Out</span>
+          </button>
         </div>
       </header>
       <section id="view-root" class="page-content"></section>
+      <?!= include('profile'); ?>
     </main>
   </div>
 
@@ -70,13 +82,14 @@
     </div>
   </div>
 
-  <!-- Generic Modal (Consolidated Check / Change Password) -->
+  <!-- Generic Modal (Consolidated Check / Forced Password Update) -->
   <div id="modal-backdrop" class="modal-backdrop hidden">
     <div id="modal-card" class="modal-card"></div>
   </div>
 
   <div id="toast-stack" class="toast-stack"></div>
 
+  <script>window.__INITIAL_PAGE__ = <?!= JSON.stringify(initialPage || '') ?>;</script>
   <?!= include('Icons'); ?>
   <?!= include('App'); ?>
 </body>

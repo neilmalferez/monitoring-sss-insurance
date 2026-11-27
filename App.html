@@ -25,7 +25,9 @@
     usersPage: { page: 1, pageSize: 15 },
     mastersPage: { page: 1, pageSize: 15, category: '' },
     auditData: { items: [], pagination: null },
-    auditFilters: { module: '', search: '', page: 1, pageSize: 25 }
+    auditFilters: { module: '', search: '', page: 1, pageSize: 25 },
+    profileAuditPage: { page: 1, pageSize: 10 },
+    profileHandlersBound: false
   };
 
   var debounceTimers = {};
@@ -38,6 +40,30 @@
     state.cache = {};
   }
 
+  var pendingRequests = 0;
+
+  function updateGlobalLoadingUi() {
+    var active = pendingRequests > 0;
+    var bar = document.getElementById('top-loading-bar');
+    var pill = document.getElementById('header-loading-indicator');
+    var label = document.getElementById('header-loading-label');
+    var refreshBtn = document.getElementById('btn-refresh');
+    if (bar) bar.classList.toggle('hidden', !active);
+    if (pill) pill.classList.toggle('is-loading', active);
+    if (label) label.textContent = active ? 'Loading...' : 'Ready';
+    if (refreshBtn) setBtnLoading(refreshBtn, active, 'Refreshing...', 'Refresh');
+  }
+
+  function beginGlobalLoading() {
+    pendingRequests++;
+    updateGlobalLoadingUi();
+  }
+
+  function endGlobalLoading() {
+    pendingRequests = Math.max(0, pendingRequests - 1);
+    updateGlobalLoadingUi();
+  }
+
   function callApi(fnName) {
     var args = Array.prototype.slice.call(arguments, 1);
     return new Promise(function(resolve, reject) {
@@ -45,12 +71,15 @@
         reject(new Error('Google Apps Script runtime unavailable.'));
         return;
       }
+      beginGlobalLoading();
       var runner = google.script.run
         .withSuccessHandler(function(res) {
+          endGlobalLoading();
           if (res && res.ok) resolve(res.data);
           else reject(new Error((res && res.error) ? res.error : 'Unknown server error'));
         })
         .withFailureHandler(function(err) {
+          endGlobalLoading();
           reject(new Error(err && err.message ? err.message : String(err)));
         });
       runner[fnName].apply(runner, args);
@@ -174,17 +203,72 @@
     });
   }
 
+  function getUserInitials(name, username) {
+    var src = String(name || username || 'U').trim();
+    var parts = src.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+    }
+    return src.slice(0, 2).toUpperCase();
+  }
+
+  function renderAvatarElements(imgId, initId, user) {
+    var imgEl = document.getElementById(imgId);
+    var initEl = document.getElementById(initId);
+    if (!imgEl || !initEl) return;
+    var photo = user && user.photo_data ? String(user.photo_data) : '';
+    if (photo) {
+      imgEl.src = photo;
+      imgEl.classList.remove('hidden');
+      initEl.classList.add('hidden');
+    } else {
+      imgEl.removeAttribute('src');
+      imgEl.classList.add('hidden');
+      initEl.textContent = getUserInitials(user && user.full_name, user && user.username);
+      initEl.classList.remove('hidden');
+    }
+  }
+
+  function renderSidebarUser() {
+    if (!state.user) return;
+    var nameEl = document.getElementById('sidebar-user-name');
+    var roleEl = document.getElementById('sidebar-user-role');
+    if (nameEl) nameEl.textContent = state.user.full_name || state.user.username;
+    if (roleEl) roleEl.textContent = state.user.role_label || state.user.role;
+    renderAvatarElements('sidebar-avatar-img', 'sidebar-avatar-initials', state.user);
+  }
+
   function initStaticIcons() {
-    var infoIcon = document.getElementById('login-info-icon');
-    if (infoIcon) infoIcon.innerHTML = renderIcon('alert', 'sm');
-    var loginIcon = document.getElementById('login-btn-icon');
-    if (loginIcon) loginIcon.innerHTML = renderIcon('login', 'sm');
-    var logoutIcon = document.getElementById('logout-btn-icon');
-    if (logoutIcon) logoutIcon.innerHTML = renderIcon('logout', 'sm');
+    var iconMap = [
+      ['login-info-icon', 'alert', 'sm'],
+      ['login-btn-icon', 'login', 'sm'],
+      ['prof-upload-icon', 'upload', 'sm'],
+      ['prof-remove-icon', 'trash', 'sm'],
+      ['prof-logout-icon', 'logout', 'sm'],
+      ['header-logout-icon', 'logout', 'sm'],
+      ['prof-save-icon', 'check', 'sm'],
+      ['prof-lock-icon', 'lock', 'sm']
+    ];
+    for (var i = 0; i < iconMap.length; i++) {
+      var el = document.getElementById(iconMap[i][0]);
+      if (el) el.innerHTML = renderIcon(iconMap[i][1], iconMap[i][2]);
+    }
+  }
+
+  function resolveInitialView() {
+    var valid = { dashboard: 1, sss: 1, insurance: 1, employees: 1, import: 1, admin: 1, audit: 1, profile: 1 };
+    var p = (window.__INITIAL_PAGE__ || '').toLowerCase();
+    if (!p && window.location && window.location.search) {
+      try {
+        p = (new URLSearchParams(window.location.search).get('page') || '').toLowerCase();
+      } catch (e) {}
+    }
+    if (valid[p]) state.activeView = p;
   }
 
   function bootstrap() {
     initStaticIcons();
+    resolveInitialView();
     if (!state.token) {
       showLogin();
       return;
@@ -218,11 +302,9 @@
   function showApp() {
     document.getElementById('login-view').classList.add('hidden');
     document.getElementById('app-shell').classList.remove('hidden');
-    document.getElementById('sidebar-user-name').textContent = state.user.full_name || state.user.username;
-    document.getElementById('sidebar-user-role').textContent = state.user.role_label || state.user.role;
-    document.getElementById('header-role-chip').textContent = state.user.role_label || state.user.role;
+    renderSidebarUser();
     renderSidebar();
-    navigate(state.activeView);
+    navigate(state.activeView, true);
   }
 
   function renderSidebar() {
@@ -254,9 +336,14 @@
         navigate(btn.getAttribute('data-nav'));
       });
     });
+    var userCard = document.getElementById('sidebar-user-card');
+    if (userCard) userCard.classList.toggle('is-active', state.activeView === 'profile');
   }
 
-  function navigate(viewId) {
+  function navigate(viewId, skipPush) {
+    if (viewId === 'admin' && state.permissions && !state.permissions.canManageUsers) {
+      viewId = 'dashboard';
+    }
     state.activeView = viewId;
     renderSidebar();
     var titles = {
@@ -266,11 +353,24 @@
       employees: ['Unified Employee Lookup', 'Combined SSS & Insurance history across all clients'],
       import: ['Legacy Import & CSV Reports', 'Parse 2025/2026 SSS & Insurance sheets with anomaly checks'],
       admin: ['Master Lists & User Accounts', 'Manage Clients, Banks, ERIDs, and Department Role access'],
-      audit: ['System Audit Log', 'Immutable record of departmental updates and field changes']
+      audit: ['System Audit Log', 'Immutable record of departmental updates and field changes'],
+      profile: ['My Profile', 'Manage your profile picture, account details, password, and session']
     };
     var t = titles[viewId] || ['Monitoring', ''];
     document.getElementById('page-title').textContent = t[0];
     document.getElementById('page-subtitle').textContent = t[1];
+
+    var viewRoot = document.getElementById('view-root');
+    var profileRoot = document.getElementById('profile-root');
+    if (viewRoot) viewRoot.classList.toggle('hidden', viewId === 'profile');
+    if (profileRoot) profileRoot.classList.toggle('hidden', viewId !== 'profile');
+
+    if (!skipPush && window.history && typeof window.history.pushState === 'function') {
+      try {
+        var nextUrl = '?page=' + encodeURIComponent(viewId);
+        window.history.pushState({ viewId: viewId }, '', nextUrl);
+      } catch (e) {}
+    }
 
     if (viewId === 'dashboard') loadDashboard();
     else if (viewId === 'sss') loadSss();
@@ -279,6 +379,7 @@
     else if (viewId === 'import') renderImportView();
     else if (viewId === 'admin') loadAdminView();
     else if (viewId === 'audit') loadAuditView();
+    else if (viewId === 'profile') loadProfileView();
   }
 
   // ==================== DASHBOARD ====================
@@ -1379,8 +1480,15 @@
       '<div class="form-grid-2"><div class="form-group"><label class="form-label">Username</label><input name="username" class="form-input" value="' + esc(user.username) + '" required /></div>' +
       '<div class="form-group"><label class="form-label">Full Name</label><input name="full_name" class="form-input" value="' + esc(user.full_name) + '" required /></div></div>' +
       '<div class="form-grid-2"><div class="form-group"><label class="form-label">Department Role</label><select name="role" class="form-select">' +
-      ['ADMIN', 'HR', 'BANK_ACCOUNTING', 'CHECK_ISSUANCE', 'VIEWER'].map(function(rl) {
-        return '<option value="' + rl + '"' + (user.role === rl ? ' selected' : '') + '>' + rl + '</option>';
+      [
+        ['ADMIN', 'System Admin (Full Access)'],
+        ['HR', 'HR Department (Section 1)'],
+        ['ACCOUNTING', 'Accounting (Bank & Check - Sections 2 & 3)'],
+        ['BANK_ACCOUNTING', 'Bank Accounting Only (Section 2)'],
+        ['CHECK_ISSUANCE', 'Check Issuance Only (Section 3)'],
+        ['VIEWER', 'Viewer (Read-Only)']
+      ].map(function(rl) {
+        return '<option value="' + rl[0] + '"' + (user.role === rl[0] ? ' selected' : '') + '>' + esc(rl[1]) + '</option>';
       }).join('') + '</select></div>' +
       '<div class="form-group"><label class="form-label">' + (isNew ? 'Initial Password (min 8 chars)' : 'Reset Password (leave blank to keep)') + '</label><input name="password" type="password" class="form-input" ' + (isNew ? 'required' : '') + '/></div></div>' +
       '<div class="form-group"><label class="form-label"><input name="is_active" type="checkbox" ' + (user.is_active ? 'checked' : '') + '/> Account Active</label></div>' +
@@ -1500,6 +1608,246 @@
     });
   }
 
+  // ==================== MY PROFILE ====================
+  function bindProfileHandlersOnce() {
+    if (state.profileHandlersBound) return;
+    state.profileHandlersBound = true;
+
+    var uploadBtn = document.getElementById('prof-upload-btn');
+    var photoInput = document.getElementById('prof-photo-input');
+    var removeBtn = document.getElementById('prof-remove-photo-btn');
+    var logoutBtn = document.getElementById('prof-logout-btn');
+    var accountForm = document.getElementById('prof-account-form');
+    var pwdForm = document.getElementById('prof-password-form');
+
+    if (uploadBtn && photoInput) {
+      uploadBtn.addEventListener('click', function() { photoInput.click(); });
+      photoInput.addEventListener('change', function() {
+        var file = photoInput.files[0];
+        photoInput.value = '';
+        if (!file) return;
+        if (!/^image\/(jpeg|png|webp)$/i.test(file.type)) {
+          toast('Please select a JPEG, PNG, or WebP image.', 'error');
+          return;
+        }
+        setBtnLoading(uploadBtn, true, 'Uploading...', 'Upload Photo');
+        resizeImageToDataUrl(file, 256, function(dataUrl) {
+          callApi('apiUpdateMyPhoto', state.token, dataUrl).then(function(res) {
+            state.user = res.user;
+            invalidateClientCache();
+            renderSidebarUser();
+            renderProfileHero();
+            loadProfileActivity(true);
+            setBtnLoading(uploadBtn, false, 'Uploading...', state.user.photo_data ? 'Change Photo' : 'Upload Photo');
+            toast('Profile photo updated.', 'ok');
+          }).catch(function(err) {
+            toast(err.message, 'error');
+            setBtnLoading(uploadBtn, false, 'Uploading...', state.user.photo_data ? 'Change Photo' : 'Upload Photo');
+          });
+        }, function(errMsg) {
+          toast(errMsg, 'error');
+          setBtnLoading(uploadBtn, false, 'Uploading...', state.user.photo_data ? 'Change Photo' : 'Upload Photo');
+        });
+      });
+    }
+
+    if (removeBtn) {
+      removeBtn.addEventListener('click', function() {
+        if (!confirm('Remove your profile photo?')) return;
+        setBtnLoading(removeBtn, true, 'Removing...', 'Remove Photo');
+        callApi('apiUpdateMyPhoto', state.token, '').then(function(res) {
+          state.user = res.user;
+          invalidateClientCache();
+          renderSidebarUser();
+          renderProfileHero();
+          loadProfileActivity(true);
+          setBtnLoading(removeBtn, false, 'Removing...', 'Remove Photo');
+          toast('Profile photo removed.', 'ok');
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(removeBtn, false, 'Removing...', 'Remove Photo');
+        });
+      });
+    }
+
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', performSignOut);
+    }
+
+    if (accountForm) {
+      accountForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var saveBtn = document.getElementById('prof-save-account-btn');
+        setBtnLoading(saveBtn, true, 'Saving...', 'Save Account Info');
+        callApi('apiUpdateMyProfile', state.token, {
+          full_name: document.getElementById('prof-fullname').value,
+          email: document.getElementById('prof-email').value
+        }).then(function(res) {
+          state.user = res.user;
+          invalidateClientCache();
+          renderSidebarUser();
+          renderProfileHero();
+          loadProfileActivity(true);
+          setBtnLoading(saveBtn, false, 'Saving...', 'Save Account Info');
+          toast('Profile information updated.', 'ok');
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(saveBtn, false, 'Saving...', 'Save Account Info');
+        });
+      });
+    }
+
+    if (pwdForm) {
+      pwdForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var curr = document.getElementById('prof-pwd-curr').value;
+        var next = document.getElementById('prof-pwd-next').value;
+        var confirmPwd = document.getElementById('prof-pwd-confirm').value;
+        if (next !== confirmPwd) {
+          toast('New password and confirmation do not match.', 'error');
+          return;
+        }
+        var savePwdBtn = document.getElementById('prof-save-pwd-btn');
+        setBtnLoading(savePwdBtn, true, 'Updating...', 'Update Password');
+        callApi('apiChangePassword', state.token, curr, next).then(function(res) {
+          state.user = res.user;
+          pwdForm.reset();
+          loadProfileActivity(true);
+          setBtnLoading(savePwdBtn, false, 'Updating...', 'Update Password');
+          toast('Password updated successfully.', 'ok');
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(savePwdBtn, false, 'Updating...', 'Update Password');
+        });
+      });
+    }
+  }
+
+  function resizeImageToDataUrl(file, size, onSuccess, onError) {
+    var reader = new FileReader();
+    reader.onerror = function() { onError('Could not read selected image file.'); };
+    reader.onload = function() {
+      var img = new Image();
+      img.onerror = function() { onError('Invalid image file.'); };
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        var ctx = canvas.getContext('2d');
+        var minSide = Math.min(img.width, img.height);
+        var sx = Math.floor((img.width - minSide) / 2);
+        var sy = Math.floor((img.height - minSide) / 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, size, size);
+        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
+        var quality = 0.82;
+        var out = canvas.toDataURL('image/jpeg', quality);
+        while (out.length > 44000 && quality > 0.35) {
+          quality -= 0.1;
+          out = canvas.toDataURL('image/jpeg', quality);
+        }
+        if (out.length > 44500) {
+          onError('Compressed image is still too large. Please try a simpler image.');
+          return;
+        }
+        onSuccess(out);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function renderProfileHero() {
+    var u = state.user || {};
+    renderAvatarElements('prof-avatar-img', 'prof-avatar-initials', u);
+    document.getElementById('prof-hero-name').textContent = u.full_name || u.username || '';
+    document.getElementById('prof-hero-username').textContent = '@' + (u.username || '');
+    document.getElementById('prof-hero-role').textContent = u.role_label || u.role || '';
+    var stEl = document.getElementById('prof-hero-status');
+    stEl.textContent = (u.is_active === false) ? 'DISABLED' : 'ACTIVE';
+    stEl.className = 'status-badge ' + ((u.is_active === false) ? 'badge-danger' : 'badge-ok');
+    document.getElementById('prof-hero-created').textContent = u.created_at ? String(u.created_at).slice(0, 10) : '—';
+    document.getElementById('prof-hero-lastlogin').textContent = u.last_login ? String(u.last_login).replace('T', ' ').slice(0, 19) : '—';
+
+    var uploadLabel = document.querySelector('#prof-upload-btn [data-btn-label]');
+    if (uploadLabel) uploadLabel.textContent = u.photo_data ? 'Change Photo' : 'Upload Photo';
+    var remBtn = document.getElementById('prof-remove-photo-btn');
+    if (remBtn) remBtn.classList.toggle('hidden', !u.photo_data);
+
+    document.getElementById('prof-username-ro').value = u.username || '';
+    document.getElementById('prof-role-ro').value = u.role_label || u.role || '';
+    document.getElementById('prof-fullname').value = u.full_name || '';
+    document.getElementById('prof-email').value = u.email || '';
+  }
+
+  function loadProfileActivity(forceReload) {
+    if (!state.user) return;
+    var pgState = state.profileAuditPage;
+    var filters = { actor: state.user.username, page: pgState.page, pageSize: pgState.pageSize };
+    var cacheKey = 'prof_act:' + JSON.stringify(filters);
+    if (!forceReload && state.cache[cacheKey]) {
+      renderProfileActivity(state.cache[cacheKey]);
+      return;
+    }
+    callApi('apiListAuditLogs', state.token, filters).then(function(res) {
+      state.cache[cacheKey] = res;
+      renderProfileActivity(res);
+    }).catch(function(err) {
+      var body = document.getElementById('prof-activity-body');
+      if (body) body.innerHTML = '<tr><td colspan="5" class="tbl-td muted">' + esc(err.message) + '</td></tr>';
+    });
+  }
+
+  function renderProfileActivity(res) {
+    var items = (res && res.items) ? res.items : [];
+    var pg = res ? res.pagination : null;
+    var countEl = document.getElementById('prof-activity-count');
+    if (countEl && pg) countEl.textContent = pg.totalItems + ' entries';
+
+    var rows = items.map(function(l) {
+      return '<tr class="tbl-row"><td class="tbl-td mono">' + esc(l.timestamp) + '</td>' +
+        '<td class="tbl-td"><span class="status-badge">' + esc(l.module) + '</span></td>' +
+        '<td class="tbl-td mono">' + esc(l.record_id) + '</td>' +
+        '<td class="tbl-td">' + esc(l.action) + '</td>' +
+        '<td class="tbl-td">' + esc(l.summary) + '</td></tr>';
+    }).join('');
+    document.getElementById('prof-activity-body').innerHTML = rows || '<tr><td colspan="5" class="tbl-td muted">No recent activity found.</td></tr>';
+    document.getElementById('prof-activity-pg').innerHTML = renderPaginationBar(pg, 'prof-audit', [5, 10, 25]);
+
+    bindPaginationBar('prof-audit', pg, function(nextPage) {
+      state.profileAuditPage.page = nextPage;
+      loadProfileActivity(false);
+    }, function(nextSize) {
+      state.profileAuditPage.pageSize = nextSize;
+      state.profileAuditPage.page = 1;
+      loadProfileActivity(false);
+    });
+  }
+
+  function loadProfileView(forceReload) {
+    initStaticIcons();
+    bindProfileHandlersOnce();
+    renderProfileHero();
+    if (forceReload || !state.cache.myProfileLoaded) {
+      callApi('apiGetMyProfile', state.token).then(function(user) {
+        state.user = Object.assign({}, state.user, user);
+        state.cache.myProfileLoaded = true;
+        renderSidebarUser();
+        renderProfileHero();
+      }).catch(function(err) { toast(err.message, 'error'); });
+    }
+    loadProfileActivity(forceReload);
+  }
+
+  function performSignOut() {
+    var tok = state.token;
+    state.token = '';
+    sessionStorage.removeItem(TOKEN_KEY);
+    invalidateClientCache();
+    callApi('apiLogout', tok).catch(function() {});
+    showLogin();
+  }
+
   // ==================== DRAWER & MODAL HELPERS ====================
   function openDrawer(bodyHtml, footHtml) {
     document.getElementById('drawer-body').innerHTML = bodyHtml;
@@ -1570,16 +1918,24 @@
     });
   });
 
-  document.getElementById('btn-logout').addEventListener('click', function() {
-    var tok = state.token;
-    state.token = '';
-    sessionStorage.removeItem(TOKEN_KEY);
-    invalidateClientCache();
-    callApi('apiLogout', tok).catch(function() {});
-    showLogin();
+  var userCard = document.getElementById('sidebar-user-card');
+  if (userCard) {
+    userCard.addEventListener('click', function() {
+      navigate('profile');
+    });
+  }
+
+  window.addEventListener('popstate', function(e) {
+    if (!state.token || !state.user) return;
+    var nextView = (e.state && e.state.viewId) ? e.state.viewId : '';
+    if (!nextView && window.location && window.location.search) {
+      try {
+        nextView = (new URLSearchParams(window.location.search).get('page') || '').toLowerCase();
+      } catch (err) {}
+    }
+    navigate(nextView || 'dashboard', true);
   });
 
-  document.getElementById('btn-open-pwd').addEventListener('click', function() { openPasswordModal(false); });
   document.getElementById('btn-refresh').addEventListener('click', function() {
     invalidateClientCache();
     if (state.activeView === 'dashboard') loadDashboard(true);
@@ -1587,8 +1943,13 @@
     else if (state.activeView === 'insurance') loadInsurance(true);
     else if (state.activeView === 'admin') loadAdminView(true);
     else if (state.activeView === 'audit') loadAuditView(true);
-    else navigate(state.activeView);
+    else if (state.activeView === 'profile') loadProfileView(true);
+    else navigate(state.activeView, true);
   });
+  var headerLogoutBtn = document.getElementById('header-logout-btn');
+  if (headerLogoutBtn) {
+    headerLogoutBtn.addEventListener('click', performSignOut);
+  }
   document.getElementById('drawer-close-btn').addEventListener('click', closeDrawer);
 
   bootstrap();

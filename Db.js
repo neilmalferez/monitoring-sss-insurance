@@ -4,7 +4,7 @@
  */
 
 var EXEC_SS_CACHE_ = null;
-var DB_READY_CACHE_KEY_ = 'db_ready:v2';
+var DB_READY_CACHE_KEY_ = 'db_ready:v3';
 var SHEET_CACHE_TTL_SEC_ = 300;
 var SHEET_CACHE_CHUNK_CHARS_ = 80000;
 var SHEET_CACHE_MAX_CHUNKS_ = 10;
@@ -58,6 +58,7 @@ function onOpen() {
     SpreadsheetApp.getUi()
       .createMenu('SSS & Insurance System')
       .addItem('Initialize / Verify Database (DB_* tabs)', 'setupDatabase')
+      .addItem('Seed Default Department Users', 'seedDefaultDepartmentUsers')
       .addItem('Recompute Workflow Stages', 'recomputeAllWorkflowStages')
       .addToUi();
   } catch (e) {
@@ -116,7 +117,7 @@ function setupDatabase() {
   }
 
   seedMasterListsIfEmpty_(ss);
-  seedDefaultAdminIfEmpty_(ss);
+  seedDefaultUsersIfMissing_(ss);
 
   for (var s = 0; s < sheetNames.length; s++) {
     invalidateSheetCache_(sheetNames[s]);
@@ -199,6 +200,7 @@ function ensureDatabaseReady_() {
       }
     }
   }
+  seedDefaultUsersIfMissing_(ss);
   try {
     CacheService.getScriptCache().put(DB_READY_CACHE_KEY_, '1', 3600);
   } catch (e) {}
@@ -219,28 +221,62 @@ function seedMasterListsIfEmpty_(ss) {
   }
 }
 
-function seedDefaultAdminIfEmpty_(ss) {
+function seedDefaultUsersIfMissing_(ss) {
   var sheet = ss.getSheetByName(APP_CONFIG.SHEETS.USERS);
-  if (sheet.getLastRow() > 1) return;
+  var existingRows = readSheetObjects_(APP_CONFIG.SHEETS.USERS, true);
+  var existingByUname = {};
+  var maxUserNum = 0;
 
-  var salt = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
-  var hash = hashPassword_('Admin@2026', salt);
+  for (var i = 0; i < existingRows.length; i++) {
+    var uname = String(existingRows[i].username || '').trim().toLowerCase();
+    if (uname) existingByUname[uname] = true;
+    var m = /^USR-(\d+)$/.exec(String(existingRows[i].user_id || ''));
+    if (m) maxUserNum = Math.max(maxUserNum, parseInt(m[1], 10));
+  }
+
+  var seeds = APP_CONFIG.SEED_USERS || [];
   var now = nowManilaIso_();
-  var row = [
-    'USR-0001',
-    'admin',
-    'System Administrator',
-    '',
-    APP_CONFIG.ROLES.ADMIN,
-    hash,
-    salt,
-    true, // must_change_password
-    true, // is_active
-    now,
-    '',
-    '' // photo_data
-  ];
-  sheet.getRange(2, 1, 1, APP_CONFIG.COLUMNS.DB_Users.length).setValues([row]);
+  var toAppend = [];
+
+  for (var s = 0; s < seeds.length; s++) {
+    var seed = seeds[s];
+    var seedUname = String(seed.username || '').trim().toLowerCase();
+    if (!seedUname || existingByUname[seedUname]) continue;
+
+    maxUserNum++;
+    var userId = 'USR-' + String(maxUserNum).padStart(4, '0');
+    var salt = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+    var hash = hashPassword_(seed.initial_password, salt);
+    toAppend.push([
+      userId,
+      seedUname,
+      seed.full_name,
+      '',
+      seed.role,
+      hash,
+      salt,
+      true,
+      true,
+      now,
+      '',
+      ''
+    ]);
+    existingByUname[seedUname] = true;
+  }
+
+  if (toAppend.length > 0) {
+    var startRow = Math.max(sheet.getLastRow() + 1, 2);
+    sheet.getRange(startRow, 1, toAppend.length, APP_CONFIG.COLUMNS.DB_Users.length).setValues(toAppend);
+    invalidateSheetCache_(APP_CONFIG.SHEETS.USERS);
+  }
+  return { added: toAppend.length };
+}
+
+function seedDefaultDepartmentUsers() {
+  ensureDatabaseReady_();
+  return withScriptLock_(function() {
+    return seedDefaultUsersIfMissing_(getSpreadsheet_());
+  });
 }
 
 function readCachedSheet_(sheetName) {

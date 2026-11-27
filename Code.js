@@ -92,6 +92,27 @@ function apiChangePassword(token, currentPassword, newPassword) {
   });
 }
 
+function apiGetMyProfile(token) {
+  return apiWrap_(function() {
+    var sess = requireSession_(token);
+    return getMyProfile_(sess);
+  });
+}
+
+function apiUpdateMyProfile(token, payload) {
+  return apiWrap_(function() {
+    var sess = requireSession_(token);
+    return updateMyProfile_(sess, payload);
+  });
+}
+
+function apiUpdateMyPhoto(token, photoData) {
+  return apiWrap_(function() {
+    var sess = requireSession_(token);
+    return updateMyPhoto_(sess, photoData);
+  });
+}
+
 function apiGetDashboard(token, filters) {
   return apiWrap_(function() {
     var sess = requireSession_(token);

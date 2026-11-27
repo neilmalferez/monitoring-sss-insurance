@@ -1,0 +1,126 @@
+<!-- Dedicated My Profile Page -->
+<section id="profile-root" class="page-content profile-wrap hidden">
+  <div class="panel profile-hero">
+    <div class="profile-hero-row">
+      <div class="profile-identity">
+        <div class="profile-avatar avatar-round">
+          <img id="prof-avatar-img" class="profile-avatar-img avatar-round hidden" alt="Profile Photo" />
+          <span id="prof-avatar-initials" class="profile-avatar-initials"></span>
+        </div>
+        <div class="profile-meta">
+          <h3 id="prof-hero-name" class="profile-name"></h3>
+          <div class="profile-meta-sub">
+            <span id="prof-hero-username" class="mono"></span>
+            <span id="prof-hero-role" class="status-badge badge-info"></span>
+            <span id="prof-hero-status" class="status-badge badge-ok"></span>
+          </div>
+          <div class="profile-meta-dates">
+            <span>Member since: <strong id="prof-hero-created">—</strong></span>
+            <span>Last login: <strong id="prof-hero-lastlogin">—</strong></span>
+          </div>
+          <div class="profile-photo-actions">
+            <input id="prof-photo-input" type="file" accept="image/jpeg,image/png,image/webp" class="hidden" />
+            <button id="prof-upload-btn" type="button" class="btn btn-primary btn-sm">
+              <span id="prof-upload-icon"></span>
+              <span data-btn-label>Upload Photo</span>
+            </button>
+            <button id="prof-remove-photo-btn" type="button" class="btn btn-sm hidden">
+              <span id="prof-remove-icon"></span>
+              <span data-btn-label>Remove Photo</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="profile-hero-actions">
+        <button id="prof-logout-btn" type="button" class="btn btn-danger btn-sm">
+          <span id="prof-logout-icon"></span>
+          <span data-btn-label>Sign Out</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Account Information</h3>
+      </div>
+      <div class="panel-body">
+        <form id="prof-account-form">
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label class="form-label" for="prof-username-ro">Username</label>
+              <input id="prof-username-ro" class="form-input mono" type="text" disabled />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="prof-role-ro">Department Role</label>
+              <input id="prof-role-ro" class="form-input" type="text" disabled />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="prof-fullname">Full Name</label>
+            <input id="prof-fullname" class="form-input" type="text" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="prof-email">Email Address</label>
+            <input id="prof-email" class="form-input" type="email" placeholder="name@company.com" />
+          </div>
+          <button id="prof-save-account-btn" type="submit" class="btn btn-primary btn-sm">
+            <span id="prof-save-icon"></span>
+            <span data-btn-label>Save Account Info</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Change Password</h3>
+      </div>
+      <div class="panel-body">
+        <form id="prof-password-form">
+          <div class="form-group">
+            <label class="form-label" for="prof-pwd-curr">Current Password</label>
+            <input id="prof-pwd-curr" class="form-input" type="password" autocomplete="current-password" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="prof-pwd-next">New Password (min 8 chars)</label>
+            <input id="prof-pwd-next" class="form-input" type="password" autocomplete="new-password" minlength="8" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="prof-pwd-confirm">Confirm New Password</label>
+            <input id="prof-pwd-confirm" class="form-input" type="password" autocomplete="new-password" minlength="8" required />
+          </div>
+          <button id="prof-save-pwd-btn" type="submit" class="btn btn-primary btn-sm">
+            <span id="prof-lock-icon"></span>
+            <span data-btn-label>Update Password</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">My Recent Activity</h3>
+      <span id="prof-activity-count" class="status-badge">0 entries</span>
+    </div>
+    <div class="tbl-wrap" style="border:none;">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th class="tbl-th">Timestamp</th>
+            <th class="tbl-th">Module</th>
+            <th class="tbl-th">Record</th>
+            <th class="tbl-th">Action</th>
+            <th class="tbl-th">Summary</th>
+          </tr>
+        </thead>
+        <tbody id="prof-activity-body">
+          <tr><td colspan="5" class="tbl-td muted">Loading recent activity...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="prof-activity-pg"></div>
+  </div>
+</section>

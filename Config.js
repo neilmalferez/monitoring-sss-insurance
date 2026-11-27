@@ -71,6 +71,7 @@ var APP_CONFIG = {
   ROLES: {
     ADMIN: 'ADMIN',
     HR: 'HR',
+    ACCOUNTING: 'ACCOUNTING',
     BANK_ACCOUNTING: 'BANK_ACCOUNTING',
     CHECK_ISSUANCE: 'CHECK_ISSUANCE',
     VIEWER: 'VIEWER'
@@ -78,6 +79,7 @@ var APP_CONFIG = {
   ROLE_LABELS: {
     ADMIN: 'System Admin',
     HR: 'HR Department',
+    ACCOUNTING: 'Accounting (Bank & Check)',
     BANK_ACCOUNTING: 'Bank Accounting',
     CHECK_ISSUANCE: 'Check Issuance',
     VIEWER: 'Viewer (Read-Only)'
@@ -89,6 +91,10 @@ var APP_CONFIG = {
         'employee_name', 'claim_sequence', 'client_project', 'benefit_type',
         'confinement_date', 'sickness_start', 'sickness_end', 'days_approved',
         'amount_to_release', 'hr_remarks'
+      ],
+      ACCOUNTING: [
+        'bank_status', 'date_credited', 'amount_credited', 'bank_notes',
+        'date_of_check', 'check_amount', 'check_no', 'variance_reason', 'check_notes'
       ],
       BANK_ACCOUNTING: [
         'bank_status', 'date_credited', 'amount_credited', 'bank_notes'
@@ -113,6 +119,11 @@ var APP_CONFIG = {
         'amount_released', 'date_of_submission', 'reimbursed_date',
         'amount_reimbursed', 'disallowance_reason', 'hr_remarks'
       ],
+      ACCOUNTING: [
+        'bank_status', 'date_credited', 'amount_credited', 'bank_notes',
+        'check_required', 'date_of_check', 'check_amount', 'check_no',
+        'final_status', 'check_notes'
+      ],
       BANK_ACCOUNTING: [
         'bank_status', 'date_credited', 'amount_credited', 'bank_notes'
       ],
@@ -132,6 +143,14 @@ var APP_CONFIG = {
       VIEWER: []
     }
   },
+  SEED_USERS: [
+    { username: 'admin', full_name: 'System Administrator', role: 'ADMIN', initial_password: 'Admin@2026' },
+    { username: 'hr.staff', full_name: 'HR Department Staff', role: 'HR', initial_password: 'HrStaff@2026' },
+    { username: 'accounting.staff', full_name: 'Accounting Staff (Bank & Check)', role: 'ACCOUNTING', initial_password: 'Accounting@2026' },
+    { username: 'bank.acctg', full_name: 'Bank Accounting Staff', role: 'BANK_ACCOUNTING', initial_password: 'BankAcctg@2026' },
+    { username: 'check.issuance', full_name: 'Check Issuance Staff', role: 'CHECK_ISSUANCE', initial_password: 'CheckIssue@2026' },
+    { username: 'viewer', full_name: 'Management Viewer', role: 'VIEWER', initial_password: 'Viewer@2026' }
+  ],
   SEED_MASTERS: [
     // Clients / Projects
     { category: 'CLIENT', code: 'VMC', label: 'VMC' },
