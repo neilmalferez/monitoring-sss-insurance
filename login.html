@@ -1,0 +1,45 @@
+<!-- Login View -->
+<div id="login-view" class="auth-shell hidden">
+  <img
+    class="auth-bg-img"
+    src="https://lh3.googleusercontent.com/d/1NjfV_WCfL7DIEaWHc8TRg_3wrtSlRR3_=w2000"
+    onerror="this.onerror=null;this.src='https://drive.google.com/thumbnail?id=1NjfV_WCfL7DIEaWHc8TRg_3wrtSlRR3_&sz=w2000';"
+    referrerpolicy="no-referrer"
+    alt=""
+    aria-hidden="true"
+  />
+  <div class="auth-bg-overlay" aria-hidden="true"></div>
+  <div class="auth-card">
+    <div class="auth-logo-wrap">
+      <img
+        class="auth-logo"
+        src="https://lh3.googleusercontent.com/d/1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU=w400"
+        onerror="this.onerror=null;this.src='https://drive.google.com/thumbnail?id=1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU&sz=w400';"
+        referrerpolicy="no-referrer"
+        alt="System Logo"
+      />
+    </div>
+    <div class="auth-kicker">PERTSERV Monitoring Portal</div>
+    <h1 class="auth-title">SSS &amp; Insurance Monitoring</h1>
+    <p class="auth-subtitle">Sign in with your department credentials (HR, Bank Accounting, Check Issuance, or Admin).</p>
+    <div id="login-error" class="auth-alert auth-alert-error hidden"></div>
+    <div class="auth-alert auth-alert-info">
+      <span id="login-info-icon"></span>
+      <span>First-time setup default admin: <strong>admin</strong> / <strong>Admin@2026</strong> (you will be prompted to change password).</span>
+    </div>
+    <form id="login-form">
+      <div class="form-group">
+        <label class="form-label" for="login-username">Username</label>
+        <input id="login-username" class="form-input" type="text" autocomplete="username" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="login-password">Password</label>
+        <input id="login-password" class="form-input" type="password" autocomplete="current-password" required />
+      </div>
+      <button id="login-submit-btn" type="submit" class="btn btn-primary" style="width:100%;margin-top:6px;">
+        <span id="login-btn-icon"></span>
+        <span data-btn-label>Sign In</span>
+      </button>
+    </form>
+  </div>
+</div>

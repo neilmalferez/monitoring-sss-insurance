@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SSS &amp; Insurance Monitoring System</title>
+  <?!= include('Styles'); ?>
+</head>
+<body class="page-body">
+  <?!= include('login'); ?>
+
+  <!-- Main Authenticated App Shell -->
+  <div id="app-shell" class="page-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="sidebar-logo-box">
+          <img
+            class="sidebar-logo"
+            src="https://lh3.googleusercontent.com/d/1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU=w400"
+            onerror="this.onerror=null;this.src='https://drive.google.com/thumbnail?id=1GmQnR0ClM6Jv5rLrFVEMsJC4U6Mx_FUU&sz=w400';"
+            referrerpolicy="no-referrer"
+            alt="System Logo"
+          />
+        </div>
+        <div class="sidebar-brand-text">
+          <div class="sidebar-brand-kicker">Monitoring &amp; Management</div>
+          <div class="sidebar-brand-title">SSS &amp; Insurance</div>
+        </div>
+      </div>
+      <nav id="sidebar-nav" class="sidebar-nav"></nav>
+      <div class="sidebar-footer">
+        <div id="sidebar-user-name" class="sidebar-user-name"></div>
+        <div id="sidebar-user-role" class="sidebar-user-role"></div>
+        <div style="margin-top:10px;display:flex;gap:6px;">
+          <button id="btn-open-pwd" type="button" class="btn btn-sm" style="flex:1;background:#1e293b;color:#e2e8f0;border-color:#334155;">Password</button>
+          <button id="btn-logout" type="button" class="btn btn-sm" style="flex:1;background:#1e293b;color:#fca5a5;border-color:#334155;">
+            <span id="logout-btn-icon"></span>
+            <span data-btn-label>Sign Out</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="page-main">
+      <header class="page-header">
+        <div>
+          <h2 id="page-title" class="page-title">Dashboard</h2>
+          <div id="page-subtitle" class="page-subtitle"></div>
+        </div>
+        <div class="page-actions">
+          <span id="header-role-chip" class="role-chip"></span>
+          <button id="btn-refresh" type="button" class="btn btn-sm">Refresh</button>
+        </div>
+      </header>
+      <section id="view-root" class="page-content"></section>
+    </main>
+  </div>
+
+  <!-- Slide-Over 3-Section Drawer -->
+  <div id="drawer-backdrop" class="drawer-backdrop hidden">
+    <div class="drawer" role="dialog" aria-modal="true">
+      <div class="drawer-head">
+        <div>
+          <div id="drawer-kicker" class="muted" style="font-size:11px;font-weight:700;text-transform:uppercase;"></div>
+          <h3 id="drawer-title" style="margin:2px 0 0;font-size:16px;"></h3>
+        </div>
+        <button id="drawer-close-btn" type="button" class="btn btn-sm">Close</button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+      <div id="drawer-foot" class="drawer-foot"></div>
+    </div>
+  </div>
+
+  <!-- Generic Modal (Consolidated Check / Change Password) -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div id="modal-card" class="modal-card"></div>
+  </div>
+
+  <div id="toast-stack" class="toast-stack"></div>
+
+  <?!= include('Icons'); ?>
+  <?!= include('App'); ?>
+</body>
+</html>

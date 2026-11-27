@@ -1,0 +1,1596 @@
+<script>
+(function() {
+  var TOKEN_KEY = 'sss_ins_session_token';
+  var state = {
+    token: sessionStorage.getItem(TOKEN_KEY) || '',
+    user: null,
+    permissions: null,
+    masters: { items: [], grouped: {} },
+    rawSheets: [],
+    activeView: 'dashboard',
+    cache: {},
+    dashboard: null,
+    dashFilters: { year: '', client: '' },
+    alertsPage: { page: 1, pageSize: 10 },
+    sssData: { items: [], totals: {}, pagination: null },
+    sssFilters: { year: '', month: '', client: '', benefitType: '', bankStatus: '', stage: '', varianceOnly: false, search: '', page: 1, pageSize: 25 },
+    insData: { items: [], totals: {}, pagination: null },
+    insFilters: { year: '', client: '', expenseBearer: '', bankStatus: '', stage: '', openBalanceOnly: false, search: '', page: 1, pageSize: 25 },
+    empQuery: '',
+    empResults: null,
+    empPage: { page: 1, pageSize: 10 },
+    importPreview: null,
+    impPage: { page: 1, pageSize: 25, anomaliesOnly: false },
+    usersList: [],
+    usersPage: { page: 1, pageSize: 15 },
+    mastersPage: { page: 1, pageSize: 15, category: '' },
+    auditData: { items: [], pagination: null },
+    auditFilters: { module: '', search: '', page: 1, pageSize: 25 }
+  };
+
+  var debounceTimers = {};
+  function debounceRun(key, fn, delay) {
+    if (debounceTimers[key]) clearTimeout(debounceTimers[key]);
+    debounceTimers[key] = setTimeout(fn, delay || 300);
+  }
+
+  function invalidateClientCache() {
+    state.cache = {};
+  }
+
+  function callApi(fnName) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function(resolve, reject) {
+      if (!window.google || !google.script || !google.script.run) {
+        reject(new Error('Google Apps Script runtime unavailable.'));
+        return;
+      }
+      var runner = google.script.run
+        .withSuccessHandler(function(res) {
+          if (res && res.ok) resolve(res.data);
+          else reject(new Error((res && res.error) ? res.error : 'Unknown server error'));
+        })
+        .withFailureHandler(function(err) {
+          reject(new Error(err && err.message ? err.message : String(err)));
+        });
+      runner[fnName].apply(runner, args);
+    });
+  }
+
+  function esc(val) {
+    return String(val === null || val === undefined ? '' : val)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function fmtPhp(val) {
+    if (val === '' || val === null || val === undefined || isNaN(Number(val))) return '—';
+    return '₱' + Number(val).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function toast(msg, kind) {
+    var stack = document.getElementById('toast-stack');
+    var el = document.createElement('div');
+    el.className = 'toast ' + (kind === 'error' ? 'toast-error' : (kind === 'ok' ? 'toast-ok' : ''));
+    el.textContent = msg;
+    stack.appendChild(el);
+    setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 4200);
+  }
+
+  function setBtnLoading(btn, isLoading, loadingLabel, defaultLabel) {
+    if (!btn) return;
+    btn.disabled = isLoading;
+    var span = btn.querySelector('[data-btn-label]');
+    if (span) span.textContent = isLoading ? loadingLabel : defaultLabel;
+    else btn.textContent = isLoading ? loadingLabel : defaultLabel;
+  }
+
+  function stageBadge(stage) {
+    var s = String(stage || '');
+    var cls = 'status-badge';
+    if (s === 'COMPLETED' || s === 'DONE') cls += ' badge-ok';
+    else if (s === 'VARIANCE_FLAGGED' || s === 'DISALLOWED_BALANCE') cls += ' badge-danger';
+    else if (s === 'ADVANCED_AWAITING_SSS' || s === 'PENDING_BANK') cls += ' badge-warn';
+    else if (s === 'CREDITED_AWAITING_CHECK' || s === 'CREDITED') cls += ' badge-info';
+    return '<span class="' + cls + '">' + esc(s.replace(/_/g, ' ')) + '</span>';
+  }
+
+  function masterOptions(category, selected, includeAllLabel) {
+    var list = (state.masters.grouped && state.masters.grouped[category]) ? state.masters.grouped[category] : [];
+    var html = includeAllLabel ? '<option value="">' + esc(includeAllLabel) + '</option>' : '';
+    var found = false;
+    for (var i = 0; i < list.length; i++) {
+      var val = category === 'CLIENT' ? list[i].label : (category === 'BANK' ? list[i].label : list[i].code);
+      var lbl = list[i].label;
+      if (String(selected) === String(val)) found = true;
+      html += '<option value="' + esc(val) + '"' + (String(selected) === String(val) ? ' selected' : '') + '>' + esc(lbl) + '</option>';
+    }
+    if (selected && !found && includeAllLabel !== undefined) {
+      html += '<option value="' + esc(selected) + '" selected>' + esc(selected) + '</option>';
+    }
+    return html;
+  }
+
+  // ==================== REUSABLE PAGINATION HELPERS ====================
+  function sliceClientPage(list, page, pageSize) {
+    var totalItems = list.length;
+    var size = parseInt(pageSize, 10) || 25;
+    var totalPages = Math.max(1, Math.ceil(totalItems / size));
+    var pg = Math.min(Math.max(parseInt(page, 10) || 1, 1), totalPages);
+    var startIdx = (pg - 1) * size;
+    var items = list.slice(startIdx, startIdx + size);
+    return {
+      items: items,
+      pagination: {
+        page: pg,
+        pageSize: size,
+        totalItems: totalItems,
+        totalPages: totalPages,
+        startRow: totalItems ? startIdx + 1 : 0,
+        endRow: startIdx + items.length
+      }
+    };
+  }
+
+  function renderPaginationBar(pg, prefix, sizeOptions) {
+    if (!pg) return '';
+    var sizes = sizeOptions || [10, 25, 50, 100];
+    var sizeOptsHtml = sizes.map(function(sz) {
+      return '<option value="' + sz + '"' + (Number(pg.pageSize) === sz ? ' selected' : '') + '>' + sz + ' / page</option>';
+    }).join('');
+    return '<div class="pagination-bar" data-pg-bar="' + esc(prefix) + '">' +
+      '<div class="pagination-info">Showing <strong>' + pg.startRow + '–' + pg.endRow + '</strong> of <strong>' + pg.totalItems + '</strong></div>' +
+      '<div class="pagination-controls">' +
+        '<select class="pagination-size" data-pg-size="' + esc(prefix) + '">' + sizeOptsHtml + '</select>' +
+        '<button type="button" class="btn btn-sm" data-pg-nav="' + esc(prefix) + ':first" ' + (pg.page <= 1 ? 'disabled' : '') + '>First</button>' +
+        '<button type="button" class="btn btn-sm" data-pg-nav="' + esc(prefix) + ':prev" ' + (pg.page <= 1 ? 'disabled' : '') + '>Prev</button>' +
+        '<span class="pagination-page-label">Page ' + pg.page + ' / ' + pg.totalPages + '</span>' +
+        '<button type="button" class="btn btn-sm" data-pg-nav="' + esc(prefix) + ':next" ' + (pg.page >= pg.totalPages ? 'disabled' : '') + '>Next</button>' +
+        '<button type="button" class="btn btn-sm" data-pg-nav="' + esc(prefix) + ':last" ' + (pg.page >= pg.totalPages ? 'disabled' : '') + '>Last</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function bindPaginationBar(prefix, currentPg, onPageChange, onSizeChange) {
+    if (!currentPg) return;
+    var sizeEl = document.querySelector('[data-pg-size="' + prefix + '"]');
+    if (sizeEl) {
+      sizeEl.addEventListener('change', function() {
+        onSizeChange(parseInt(sizeEl.value, 10) || 25);
+      });
+    }
+    document.querySelectorAll('[data-pg-nav^="' + prefix + ':"]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var action = btn.getAttribute('data-pg-nav').split(':')[1];
+        var nextPage = currentPg.page;
+        if (action === 'first') nextPage = 1;
+        else if (action === 'prev') nextPage = Math.max(1, currentPg.page - 1);
+        else if (action === 'next') nextPage = Math.min(currentPg.totalPages, currentPg.page + 1);
+        else if (action === 'last') nextPage = currentPg.totalPages;
+        if (nextPage !== currentPg.page) onPageChange(nextPage);
+      });
+    });
+  }
+
+  function initStaticIcons() {
+    var infoIcon = document.getElementById('login-info-icon');
+    if (infoIcon) infoIcon.innerHTML = renderIcon('alert', 'sm');
+    var loginIcon = document.getElementById('login-btn-icon');
+    if (loginIcon) loginIcon.innerHTML = renderIcon('login', 'sm');
+    var logoutIcon = document.getElementById('logout-btn-icon');
+    if (logoutIcon) logoutIcon.innerHTML = renderIcon('logout', 'sm');
+  }
+
+  function bootstrap() {
+    initStaticIcons();
+    if (!state.token) {
+      showLogin();
+      return;
+    }
+    callApi('apiBootstrap', state.token).then(function(res) {
+      if (!res.authenticated) {
+        state.token = '';
+        sessionStorage.removeItem(TOKEN_KEY);
+        showLogin();
+        return;
+      }
+      state.user = res.user;
+      state.permissions = res.permissions;
+      state.masters = res.masters || { items: [], grouped: {} };
+      state.rawSheets = res.rawSheets || [];
+      showApp();
+      if (state.user.must_change_password) {
+        openPasswordModal(true);
+      }
+    }).catch(function(err) {
+      toast(err.message, 'error');
+      showLogin();
+    });
+  }
+
+  function showLogin() {
+    document.getElementById('app-shell').classList.add('hidden');
+    document.getElementById('login-view').classList.remove('hidden');
+  }
+
+  function showApp() {
+    document.getElementById('login-view').classList.add('hidden');
+    document.getElementById('app-shell').classList.remove('hidden');
+    document.getElementById('sidebar-user-name').textContent = state.user.full_name || state.user.username;
+    document.getElementById('sidebar-user-role').textContent = state.user.role_label || state.user.role;
+    document.getElementById('header-role-chip').textContent = state.user.role_label || state.user.role;
+    renderSidebar();
+    navigate(state.activeView);
+  }
+
+  function renderSidebar() {
+    var navItems = [
+      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', section: 'Monitoring' },
+      { id: 'sss', label: 'SSS Monitoring', icon: 'clipboard', section: 'Monitoring' },
+      { id: 'insurance', label: 'Insurance & Accident', icon: 'shield', section: 'Monitoring' },
+      { id: 'employees', label: 'Employee Lookup', icon: 'users', section: 'Monitoring' },
+      { id: 'import', label: 'Import & Reports', icon: 'upload', section: 'Operations', show: state.permissions.canImport || true },
+      { id: 'admin', label: 'Master Lists & Users', icon: 'settings', section: 'Administration', show: state.permissions.canManageUsers },
+      { id: 'audit', label: 'Audit Log', icon: 'history', section: 'Administration' }
+    ];
+    var html = '';
+    var lastSec = '';
+    for (var i = 0; i < navItems.length; i++) {
+      var it = navItems[i];
+      if (it.show === false) continue;
+      if (it.section !== lastSec) {
+        html += '<div class="sidebar-nav-label">' + esc(it.section) + '</div>';
+        lastSec = it.section;
+      }
+      html += '<button type="button" class="sidebar-nav-link ' + (state.activeView === it.id ? 'is-active' : '') +
+        '" data-nav="' + it.id + '">' + renderIcon(it.icon, 'md') + '<span>' + esc(it.label) + '</span></button>';
+    }
+    var nav = document.getElementById('sidebar-nav');
+    nav.innerHTML = html;
+    nav.querySelectorAll('[data-nav]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        navigate(btn.getAttribute('data-nav'));
+      });
+    });
+  }
+
+  function navigate(viewId) {
+    state.activeView = viewId;
+    renderSidebar();
+    var titles = {
+      dashboard: ['Executive Monitoring Dashboard', 'Real-time PHP exposure, aging alerts, and departmental progress'],
+      sss: ['SSS Sickness, Maternity & EC Claims', 'HR Filing → Bank Crediting → Check Issuance workflow'],
+      insurance: ['Insurance & Accident Monitoring', 'Work-related accident reimbursements and disallowance tracking'],
+      employees: ['Unified Employee Lookup', 'Combined SSS & Insurance history across all clients'],
+      import: ['Legacy Import & CSV Reports', 'Parse 2025/2026 SSS & Insurance sheets with anomaly checks'],
+      admin: ['Master Lists & User Accounts', 'Manage Clients, Banks, ERIDs, and Department Role access'],
+      audit: ['System Audit Log', 'Immutable record of departmental updates and field changes']
+    };
+    var t = titles[viewId] || ['Monitoring', ''];
+    document.getElementById('page-title').textContent = t[0];
+    document.getElementById('page-subtitle').textContent = t[1];
+
+    if (viewId === 'dashboard') loadDashboard();
+    else if (viewId === 'sss') loadSss();
+    else if (viewId === 'insurance') loadInsurance();
+    else if (viewId === 'employees') renderEmployeesView();
+    else if (viewId === 'import') renderImportView();
+    else if (viewId === 'admin') loadAdminView();
+    else if (viewId === 'audit') loadAuditView();
+  }
+
+  // ==================== DASHBOARD ====================
+  function loadDashboard(forceReload) {
+    var filters = state.dashFilters;
+    var cacheKey = 'dash:' + JSON.stringify(filters);
+    if (!forceReload && state.cache[cacheKey]) {
+      state.dashboard = state.cache[cacheKey];
+      renderDashboard(filters);
+      return;
+    }
+    var root = document.getElementById('view-root');
+    root.innerHTML = '<div class="panel"><div class="panel-body">Loading dashboard metrics...</div></div>';
+    callApi('apiGetDashboard', state.token, filters).then(function(data) {
+      state.cache[cacheKey] = data;
+      state.dashboard = data;
+      renderDashboard(filters);
+    }).catch(function(err) {
+      root.innerHTML = '<div class="auth-alert auth-alert-error">' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderDashboard(filters) {
+    var d = state.dashboard;
+    var s = d.sss;
+    var ins = d.insurance;
+    var pagedAlerts = sliceClientPage(d.agingAlerts || [], state.alertsPage.page, state.alertsPage.pageSize);
+    state.alertsPage.page = pagedAlerts.pagination.page;
+    var html = '';
+
+    html += '<div class="filter-bar">' +
+      '<div class="filter-group"><label class="form-label">Year</label>' +
+        '<select id="dash-year" class="form-select"><option value="">All Years</option>' +
+        '<option value="2026"' + (filters.year === '2026' ? ' selected' : '') + '>2026</option>' +
+        '<option value="2025"' + (filters.year === '2025' ? ' selected' : '') + '>2025</option></select></div>' +
+      '<div class="filter-group"><label class="form-label">Client / Project</label>' +
+        '<select id="dash-client" class="form-select">' + masterOptions('CLIENT', filters.client, 'All Clients') + '</select></div>' +
+      '<button id="dash-apply-btn" type="button" class="btn btn-primary btn-sm">Apply</button>' +
+    '</div>';
+
+    html += '<div class="kpi-grid">' +
+      '<div class="kpi-card"><div class="kpi-label">SSS Total Approved</div><div class="kpi-value">' + fmtPhp(s.totalApprovedAmount) + '</div><div class="kpi-meta">' + s.totalClaims + ' claims (' + s.completedCount + ' completed)</div></div>' +
+      '<div class="kpi-card kpi-warn"><div class="kpi-label">Pending SSS Bank Credit</div><div class="kpi-value">' + fmtPhp(s.pendingBankAmount) + '</div><div class="kpi-meta">' + s.pendingBankCount + ' claims awaiting SSS credit</div></div>' +
+      '<div class="kpi-card kpi-warn"><div class="kpi-label">Pending Check Issuance</div><div class="kpi-value">' + fmtPhp(s.pendingCheckAmount) + '</div><div class="kpi-meta">' + s.pendingCheckCount + ' claims without check</div></div>' +
+      '<div class="kpi-card kpi-danger"><div class="kpi-label">Advanced Cash Exposure</div><div class="kpi-value">' + fmtPhp(s.advancedExposureAmount) + '</div><div class="kpi-meta">' + s.advancedExposureCount + ' checks released before SSS credit</div></div>' +
+      '<div class="kpi-card kpi-ok"><div class="kpi-label">Insurance Released</div><div class="kpi-value">' + fmtPhp(ins.totalReleasedAmount) + '</div><div class="kpi-meta">' + ins.totalClaims + ' cases (Reimbursed: ' + fmtPhp(ins.totalReimbursedAmount) + ')</div></div>' +
+      '<div class="kpi-card kpi-danger"><div class="kpi-label">Insurance Disallowed / Open Bal</div><div class="kpi-value">' + fmtPhp(ins.disallowedBalanceAmount) + '</div><div class="kpi-meta">' + ins.disallowedBalanceCount + ' cases with variance | ' + ins.pendingReimbursementCount + ' pending bank</div></div>' +
+    '</div>';
+
+    // Aging Alerts (Paginated)
+    html += '<div class="panel"><div class="panel-head"><h3 class="panel-title">Aging Alerts (&gt;30d Bank Credit / &gt;14d Check Issuance)</h3>' +
+      '<span class="status-badge ' + (d.totalAgingAlertsCount ? 'badge-danger' : 'badge-ok') + '">' + d.totalAgingAlertsCount + ' Overdue</span></div>';
+    if (d.agingAlerts.length === 0) {
+      html += '<div class="panel-body muted">No overdue claims found under current filters.</div>';
+    } else {
+      html += '<div class="tbl-wrap" style="border:none;"><table class="tbl"><thead><tr>' +
+        '<th class="tbl-th">Module</th><th class="tbl-th">Employee</th><th class="tbl-th">Client</th>' +
+        '<th class="tbl-th">Ref No.</th><th class="tbl-th">Alert</th><th class="tbl-th num">Days</th><th class="tbl-th num">Amount</th>' +
+        '</tr></thead><tbody>';
+      for (var i = 0; i < pagedAlerts.items.length; i++) {
+        var al = pagedAlerts.items[i];
+        html += '<tr class="tbl-row is-clickable" data-alert-mod="' + esc(al.module) + '" data-alert-id="' + esc(al.id) + '">' +
+          '<td class="tbl-td"><span class="status-badge">' + esc(al.module) + '</span></td>' +
+          '<td class="tbl-td fw-600">' + esc(al.employee_name) + '</td>' +
+          '<td class="tbl-td">' + esc(al.client) + '</td>' +
+          '<td class="tbl-td mono">' + esc(al.ref_no) + '</td>' +
+          '<td class="tbl-td"><span class="status-badge badge-danger">' + esc(al.alert_type.replace(/_/g, ' ')) + '</span></td>' +
+          '<td class="tbl-td num fw-600">' + al.days_aged + 'd</td>' +
+          '<td class="tbl-td num">' + fmtPhp(al.amount) + '</td></tr>';
+      }
+      html += '</tbody></table></div>' + renderPaginationBar(pagedAlerts.pagination, 'alerts', [10, 25, 50]);
+    }
+    html += '</div>';
+
+    html += '<div class="dash-grid">' +
+      renderBarPanel('Top Clients / Projects (PHP)', d.breakdowns.byClient.slice(0, 10)) +
+      renderBarPanel('Bank & Benefit Distribution (PHP)', d.breakdowns.byBank.concat(d.breakdowns.byBenefit)) +
+    '</div>';
+
+    document.getElementById('view-root').innerHTML = html;
+    document.getElementById('dash-apply-btn').addEventListener('click', function() {
+      state.dashFilters.year = document.getElementById('dash-year').value;
+      state.dashFilters.client = document.getElementById('dash-client').value;
+      state.alertsPage.page = 1;
+      loadDashboard(true);
+    });
+    bindPaginationBar('alerts', pagedAlerts.pagination, function(pg) {
+      state.alertsPage.page = pg;
+      renderDashboard(filters);
+    }, function(sz) {
+      state.alertsPage.pageSize = sz;
+      state.alertsPage.page = 1;
+      renderDashboard(filters);
+    });
+    document.querySelectorAll('[data-alert-id]').forEach(function(row) {
+      row.addEventListener('click', function() {
+        var mod = row.getAttribute('data-alert-mod');
+        var id = row.getAttribute('data-alert-id');
+        openClaimById(mod, id);
+      });
+    });
+  }
+
+  function renderBarPanel(title, list) {
+    var maxAmt = 1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].amount > maxAmt) maxAmt = list[i].amount;
+    }
+    var body = '';
+    if (!list.length) {
+      body = '<div class="muted">No data yet.</div>';
+    } else {
+      body = '<div class="bar-list">';
+      for (var j = 0; j < list.length; j++) {
+        var pct = Math.max(2, Math.round((list[j].amount / maxAmt) * 100));
+        body += '<div><div class="bar-item-head"><span><strong>' + esc(list[j].key) + '</strong> <span class="muted">(' + list[j].count + ')</span></span>' +
+          '<span class="num fw-600">' + fmtPhp(list[j].amount) + '</span></div>' +
+          '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;"></div></div></div>';
+      }
+      body += '</div>';
+    }
+    return '<div class="panel"><div class="panel-head"><h3 class="panel-title">' + esc(title) + '</h3></div><div class="panel-body">' + body + '</div></div>';
+  }
+
+  function openClaimById(mod, id) {
+    if (mod === 'SSS') {
+      callApi('apiGetSssById', state.token, id).then(function(rec) {
+        if (rec) openSssDrawer(rec);
+      }).catch(function(err) { toast(err.message, 'error'); });
+    } else {
+      callApi('apiGetInsuranceById', state.token, id).then(function(rec) {
+        if (rec) openInsuranceDrawer(rec);
+      }).catch(function(err) { toast(err.message, 'error'); });
+    }
+  }
+
+  // ==================== SSS MONITORING ====================
+  function loadSss(forceReload) {
+    var cacheKey = 'sss:' + JSON.stringify(state.sssFilters);
+    if (!forceReload && state.cache[cacheKey]) {
+      state.sssData = state.cache[cacheKey];
+      renderSssView();
+      return;
+    }
+    var root = document.getElementById('view-root');
+    root.innerHTML = '<div class="panel"><div class="panel-body">Loading SSS claims...</div></div>';
+    callApi('apiListSss', state.token, state.sssFilters).then(function(res) {
+      state.cache[cacheKey] = res;
+      state.sssData = res;
+      state.sssFilters.page = res.pagination ? res.pagination.page : 1;
+      renderSssView();
+    }).catch(function(err) {
+      root.innerHTML = '<div class="auth-alert auth-alert-error">' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderSssView() {
+    var f = state.sssFilters;
+    var t = state.sssData.totals || {};
+    var items = state.sssData.items || [];
+    var pg = state.sssData.pagination;
+    var html = '';
+
+    html += '<div class="filter-bar">' +
+      '<div class="filter-group filter-grow"><label class="form-label">Search (Employee, SS No., Claim Ref, Check #)</label>' +
+        '<input id="sss-f-search" class="form-input" value="' + esc(f.search) + '" placeholder="Type name, SS #, SNEW..., or Check #..." /></div>' +
+      '<div class="filter-group"><label class="form-label">Year</label>' +
+        '<select id="sss-f-year" class="form-select"><option value="">All</option><option value="2026"' + (f.year === '2026' ? ' selected' : '') + '>2026</option><option value="2025"' + (f.year === '2025' ? ' selected' : '') + '>2025</option></select></div>' +
+      '<div class="filter-group"><label class="form-label">Client</label>' +
+        '<select id="sss-f-client" class="form-select">' + masterOptions('CLIENT', f.client, 'All Clients') + '</select></div>' +
+      '<div class="filter-group"><label class="form-label">Benefit</label>' +
+        '<select id="sss-f-benefit" class="form-select">' + masterOptions('BENEFIT_TYPE', f.benefitType, 'All Types') + '</select></div>' +
+      '<div class="filter-group"><label class="form-label">Stage</label>' +
+        '<select id="sss-f-stage" class="form-select"><option value="">All Stages</option>' +
+        ['FILED_HR', 'ADVANCED_AWAITING_SSS', 'CREDITED_AWAITING_CHECK', 'COMPLETED', 'VARIANCE_FLAGGED'].map(function(st) {
+          return '<option value="' + st + '"' + (f.stage === st ? ' selected' : '') + '>' + st.replace(/_/g, ' ') + '</option>';
+        }).join('') + '</select></div>' +
+      '<div class="filter-group" style="min-width:auto;"><label class="filter-check"><input id="sss-f-var" type="checkbox"' + (f.varianceOnly ? ' checked' : '') + ' /> Variances Only</label></div>' +
+      '<button id="sss-f-apply" type="button" class="btn btn-primary btn-sm">Filter</button>' +
+      (state.permissions.canCreateSss ? '<button id="sss-new-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('plus', 'sm') + '<span data-btn-label>New SSS Claim</span></button>' : '') +
+      '<button id="sss-export-btn" type="button" class="btn btn-sm">' + renderIcon('download', 'sm') + '<span data-btn-label>Export CSV</span></button>' +
+    '</div>';
+
+    html += '<div class="kpi-grid">' +
+      '<div class="kpi-card"><div class="kpi-label">Filtered Claims</div><div class="kpi-value">' + (t.count || 0) + '</div><div class="kpi-meta">' + (t.variance_count || 0) + ' flagged variances</div></div>' +
+      '<div class="kpi-card"><div class="kpi-label">Amount to Release</div><div class="kpi-value">' + fmtPhp(t.amount_to_release) + '</div></div>' +
+      '<div class="kpi-card kpi-ok"><div class="kpi-label">Amount Credited</div><div class="kpi-value">' + fmtPhp(t.amount_credited) + '</div></div>' +
+      '<div class="kpi-card kpi-warn"><div class="kpi-label">Pending Check / Exposed</div><div class="kpi-value">' + fmtPhp(t.pending_check_amount) + '</div><div class="kpi-meta">Advanced pending SSS: ' + fmtPhp(t.advanced_exposure_amount) + '</div></div>' +
+    '</div>';
+
+    html += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+      '<th class="tbl-th">Date</th><th class="tbl-th">Claim Ref / SS #</th><th class="tbl-th">Employee</th>' +
+      '<th class="tbl-th">Client</th><th class="tbl-th">Type</th><th class="tbl-th num">Days</th>' +
+      '<th class="tbl-th num">Approved</th><th class="tbl-th">Bank Credit</th><th class="tbl-th">Check Issuance</th>' +
+      '<th class="tbl-th">Stage</th></tr></thead><tbody>';
+
+    if (items.length === 0) {
+      html += '<tr><td colspan="10" class="tbl-td muted">No SSS claims match the selected filters.</td></tr>';
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var r = items[i];
+        var hasVar = r.workflow_stage === 'VARIANCE_FLAGGED';
+        html += '<tr class="tbl-row is-clickable ' + (hasVar ? 'row-variance' : '') + '" data-sss-id="' + esc(r.id) + '">' +
+          '<td class="tbl-td mono">' + esc(r.filing_date || '—') + '</td>' +
+          '<td class="tbl-td"><div class="mono fw-600">' + esc(r.claim_ref_no) + '</div><div class="mono muted">' + esc(r.ss_number) + '</div></td>' +
+          '<td class="tbl-td"><div class="fw-600">' + esc(r.employee_name) + '</div>' + (r.claim_sequence ? '<div class="muted">Seq: ' + esc(r.claim_sequence) + '</div>' : '') + '</td>' +
+          '<td class="tbl-td">' + esc(r.client_project) + '</td>' +
+          '<td class="tbl-td">' + esc(r.benefit_type) + '</td>' +
+          '<td class="tbl-td num">' + esc(r.days_approved) + '</td>' +
+          '<td class="tbl-td num fw-600">' + fmtPhp(r.amount_to_release) + '</td>' +
+          '<td class="tbl-td"><div>' + esc(r.bank_status) + '</div><div class="muted">' + esc(r.date_credited || '—') + ' | ' + fmtPhp(r.amount_credited) + '</div></td>' +
+          '<td class="tbl-td">' + (r.check_no
+            ? '<button type="button" class="btn-link mono" data-check-group="' + esc(r.check_no) + '">' + esc(r.check_no) + '</button><div class="muted">' + esc(r.date_of_check || '—') + ' | ' + fmtPhp(r.check_amount) + '</div>'
+            : '<span class="muted">Pending</span>') + '</td>' +
+          '<td class="tbl-td">' + stageBadge(r.workflow_stage) + (r.is_advanced ? ' <span class="status-badge badge-warn">ADV</span>' : '') + '</td></tr>';
+      }
+    }
+    html += '</tbody></table>' + renderPaginationBar(pg, 'sss', [10, 25, 50, 100]) + '</div>';
+    document.getElementById('view-root').innerHTML = html;
+
+    function applySssFilters() {
+      state.sssFilters.search = document.getElementById('sss-f-search').value;
+      state.sssFilters.year = document.getElementById('sss-f-year').value;
+      state.sssFilters.client = document.getElementById('sss-f-client').value;
+      state.sssFilters.benefitType = document.getElementById('sss-f-benefit').value;
+      state.sssFilters.stage = document.getElementById('sss-f-stage').value;
+      state.sssFilters.varianceOnly = document.getElementById('sss-f-var').checked;
+      state.sssFilters.page = 1;
+      loadSss();
+    }
+
+    document.getElementById('sss-f-apply').addEventListener('click', applySssFilters);
+    document.getElementById('sss-f-search').addEventListener('input', function() {
+      debounceRun('sss-search', function() {
+        var el = document.getElementById('sss-f-search');
+        if (el) {
+          state.sssFilters.search = el.value;
+          state.sssFilters.page = 1;
+          loadSss();
+        }
+      }, 350);
+    });
+    document.getElementById('sss-f-search').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') applySssFilters();
+    });
+    ['sss-f-year', 'sss-f-client', 'sss-f-benefit', 'sss-f-stage', 'sss-f-var'].forEach(function(id) {
+      document.getElementById(id).addEventListener('change', applySssFilters);
+    });
+
+    bindPaginationBar('sss', pg, function(nextPage) {
+      state.sssFilters.page = nextPage;
+      loadSss();
+    }, function(nextSize) {
+      state.sssFilters.pageSize = nextSize;
+      state.sssFilters.page = 1;
+      loadSss();
+    });
+
+    var newBtn = document.getElementById('sss-new-btn');
+    if (newBtn) newBtn.addEventListener('click', function() { openSssDrawer(null); });
+    document.getElementById('sss-export-btn').addEventListener('click', function() {
+      downloadCsvExport('SSS', state.sssFilters);
+    });
+    document.querySelectorAll('[data-check-group]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        openCheckGroupModal(btn.getAttribute('data-check-group'));
+      });
+    });
+    document.querySelectorAll('[data-sss-id]').forEach(function(row) {
+      row.addEventListener('click', function() {
+        var id = row.getAttribute('data-sss-id');
+        var rec = state.sssData.items.find(function(x) { return x.id === id; });
+        if (rec) openSssDrawer(rec);
+      });
+    });
+  }
+
+  function canEditField(mod, field) {
+    var list = mod === 'SSS' ? state.permissions.sssWritableFields : state.permissions.insuranceWritableFields;
+    return list && list.indexOf(field) !== -1;
+  }
+
+  function openSssDrawer(record) {
+    var isCreate = !record;
+    var r = record || {
+      filing_date: new Date().toISOString().slice(0, 10),
+      employer_erid: '06-1758925-7-000',
+      claim_ref_no: '', ss_number: '', employee_name: '', claim_sequence: '',
+      client_project: 'VMC', benefit_type: 'SB', confinement_date: '',
+      sickness_start: '', sickness_end: '', days_approved: '', amount_to_release: '',
+      hr_remarks: '', bank_status: 'PENDING', date_credited: '', amount_credited: '',
+      bank_notes: '', date_of_check: '', check_amount: '', check_no: '',
+      variance_reason: '', check_notes: ''
+    };
+
+    var hrEditable = canEditField('SSS', 'employee_name');
+    var bankEditable = canEditField('SSS', 'date_credited');
+    var checkEditable = canEditField('SSS', 'check_no');
+
+    document.getElementById('drawer-kicker').textContent = isCreate ? 'New SSS Claim' : ('SSS Claim ' + r.id);
+    document.getElementById('drawer-title').textContent = isCreate ? 'File New SSS Benefit Claim' : (r.employee_name + ' — ' + r.claim_ref_no);
+
+    var body = '<form id="sss-drawer-form">' +
+      '<div id="sss-live-variance" class="banner-alert hidden"></div>' +
+      '<div class="section-card sec-hr ' + (!hrEditable ? 'is-locked' : '') + '">' +
+        '<div class="section-card-head"><span>1. HR Department (Filing &amp; Claim Details)</span><span>' + (hrEditable ? 'Editable' : 'Locked') + '</span></div>' +
+        '<div class="section-card-body">' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Filing Date</label><input name="filing_date" type="date" class="form-input" value="' + esc(r.filing_date) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Employer ERID</label><input name="employer_erid" class="form-input mono" value="' + esc(r.employer_erid) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Benefit Type</label><select name="benefit_type" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('BENEFIT_TYPE', r.benefit_type) + '</select></div>' +
+          '</div>' +
+          '<div class="form-grid-2">' +
+            '<div class="form-group"><label class="form-label">Claim Ref No.</label><input name="claim_ref_no" class="form-input mono" value="' + esc(r.claim_ref_no) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+            '<div class="form-group"><label class="form-label">SS Number</label><input name="ss_number" class="form-input mono" value="' + esc(r.ss_number) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group" style="grid-column:span 2;"><label class="form-label">Employee Name (LAST, FIRST M.)</label><input name="employee_name" class="form-input" value="' + esc(r.employee_name) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Sequence / Ext.</label><input name="claim_sequence" class="form-input" value="' + esc(r.claim_sequence) + '" placeholder="1, 2, extension..." ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Client / Project</label><select name="client_project" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('CLIENT', r.client_project, '') + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Days Approved</label><input name="days_approved" type="number" min="0" class="form-input" value="' + esc(r.days_approved) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Amount to Release (PHP)</label><input name="amount_to_release" type="number" step="0.01" min="0" class="form-input" value="' + esc(r.amount_to_release) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Confinement Date</label><input name="confinement_date" type="date" class="form-input" value="' + esc(r.confinement_date) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Sickness Start</label><input name="sickness_start" type="date" class="form-input" value="' + esc(r.sickness_start) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Sickness End</label><input name="sickness_end" type="date" class="form-input" value="' + esc(r.sickness_end) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-group"><label class="form-label">HR Remarks</label><input name="hr_remarks" class="form-input" value="' + esc(r.hr_remarks) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="section-card sec-bank ' + (!bankEditable ? 'is-locked' : '') + '">' +
+        '<div class="section-card-head"><span>2. Assigned Bank Account Accounting</span><span>' + (bankEditable ? 'Editable' : 'Locked') + '</span></div>' +
+        '<div class="section-card-body">' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Bank Status</label><select name="bank_status" class="form-select" ' + (!bankEditable ? 'disabled' : '') + '>' +
+              '<option value="PENDING"' + (r.bank_status === 'PENDING' ? ' selected' : '') + '>PENDING</option>' + masterOptions('BANK', r.bank_status) + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Date Credited</label><input name="date_credited" type="date" class="form-input" value="' + esc(r.date_credited) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Amount Credited (PHP)</label><input name="amount_credited" type="number" step="0.01" class="form-input" value="' + esc(r.amount_credited) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-group"><label class="form-label">Bank Accounting Notes</label><input name="bank_notes" class="form-input" value="' + esc(r.bank_notes) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="section-card sec-check ' + (!checkEditable ? 'is-locked' : '') + '">' +
+        '<div class="section-card-head"><span>3. Check Issuance Accounting</span><span>' + (checkEditable ? 'Editable' : 'Locked') + '</span></div>' +
+        '<div class="section-card-body">' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Date of Check</label><input name="date_of_check" type="date" class="form-input" value="' + esc(r.date_of_check) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Check Amount (PHP)</label><input name="check_amount" type="number" step="0.01" class="form-input" value="' + esc(r.check_amount) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Check #</label><input name="check_no" class="form-input mono" value="' + esc(r.check_no) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-2">' +
+            '<div class="form-group"><label class="form-label">Variance Reason (if mismatched)</label><input name="variance_reason" class="form-input" value="' + esc(r.variance_reason) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Check Issuance Notes</label><input name="check_notes" class="form-input" value="' + esc(r.check_notes) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</form>';
+
+    var foot = '<div>' +
+      (!isCreate && state.permissions.canDelete
+        ? '<button id="sss-delete-btn" type="button" class="btn btn-danger btn-sm">' + renderIcon('trash', 'sm') + '<span data-btn-label>Delete</span></button>'
+        : '') +
+      '</div><div style="display:flex;gap:8px;">' +
+      '<button id="drawer-cancel-btn" type="button" class="btn btn-sm">Cancel</button>' +
+      (hrEditable || bankEditable || checkEditable
+        ? '<button id="sss-save-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('check', 'sm') + '<span data-btn-label>Save Claim</span></button>'
+        : '') +
+      '</div>';
+
+    openDrawer(body, foot);
+
+    function updateVariancePreview() {
+      var form = document.getElementById('sss-drawer-form');
+      var rel = Number(form.amount_to_release.value);
+      var cred = form.amount_credited.value !== '' ? Number(form.amount_credited.value) : null;
+      var chk = form.check_amount.value !== '' ? Number(form.check_amount.value) : null;
+      var msgs = [];
+      if (cred !== null && Math.abs(rel - cred) > 0.009) msgs.push('Bank Variance: ' + fmtPhp(rel - cred));
+      if (chk !== null && Math.abs(rel - chk) > 0.009) msgs.push('Check Variance: ' + fmtPhp(rel - chk));
+      var el = document.getElementById('sss-live-variance');
+      if (msgs.length) {
+        el.innerHTML = renderIcon('alert', 'sm') + '<span><strong>Variance Warning:</strong> ' + esc(msgs.join(' | ')) + '</span>';
+        el.classList.remove('hidden');
+      } else {
+        el.classList.add('hidden');
+      }
+    }
+    updateVariancePreview();
+    document.getElementById('sss-drawer-form').addEventListener('input', updateVariancePreview);
+
+    var saveBtn = document.getElementById('sss-save-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function() {
+        var form = document.getElementById('sss-drawer-form');
+        var payload = isCreate ? {} : { id: r.id };
+        var fields = ['filing_date', 'employer_erid', 'claim_ref_no', 'ss_number', 'employee_name', 'claim_sequence', 'client_project', 'benefit_type', 'confinement_date', 'sickness_start', 'sickness_end', 'days_approved', 'amount_to_release', 'hr_remarks', 'bank_status', 'date_credited', 'amount_credited', 'bank_notes', 'date_of_check', 'check_amount', 'check_no', 'variance_reason', 'check_notes'];
+        fields.forEach(function(fn) {
+          if (form[fn] && !form[fn].disabled) payload[fn] = form[fn].value;
+        });
+        setBtnLoading(saveBtn, true, 'Saving...', 'Save Claim');
+        callApi('apiSaveSss', state.token, payload).then(function(res) {
+          closeDrawer();
+          invalidateClientCache();
+          toast('SSS claim saved (' + res.record.claim_ref_no + ').', 'ok');
+          if (res.warnings && res.warnings.length) toast(res.warnings.join(' '), 'error');
+          if (state.activeView === 'dashboard') loadDashboard(true);
+          else loadSss(true);
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(saveBtn, false, 'Saving...', 'Save Claim');
+        });
+      });
+    }
+
+    var delBtn = document.getElementById('sss-delete-btn');
+    if (delBtn) {
+      delBtn.addEventListener('click', function() {
+        if (!confirm('Soft-delete SSS claim ' + r.claim_ref_no + '?')) return;
+        setBtnLoading(delBtn, true, 'Deleting...', 'Delete');
+        callApi('apiDeleteSss', state.token, r.id).then(function() {
+          closeDrawer();
+          invalidateClientCache();
+          toast('SSS claim deleted.', 'ok');
+          loadSss(true);
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(delBtn, false, 'Deleting...', 'Delete');
+        });
+      });
+    }
+  }
+
+  function openCheckGroupModal(checkNo) {
+    callApi('apiGetCheckGroup', state.token, checkNo).then(function(res) {
+      var rowsHtml = res.claims.map(function(c) {
+        return '<tr class="tbl-row"><td class="tbl-td mono">' + esc(c.claim_ref_no) + '</td>' +
+          '<td class="tbl-td fw-600">' + esc(c.employee_name) + '</td>' +
+          '<td class="tbl-td">' + esc(c.client_project) + '</td>' +
+          '<td class="tbl-td num">' + fmtPhp(c.amount_to_release) + '</td>' +
+          '<td class="tbl-td num">' + fmtPhp(c.check_amount) + '</td></tr>';
+      }).join('');
+      var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+        '<h3 style="margin:0;">Consolidated Check #' + esc(res.check_no) + '</h3>' +
+        '<button type="button" class="btn btn-sm" id="modal-close-btn">Close</button></div>' +
+        '<p class="muted" style="margin-top:0;">Claims covered: <strong>' + res.count + '</strong> | Total Approved: <strong>' + fmtPhp(res.total_approved_amount) + '</strong></p>' +
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="tbl-th">Claim Ref</th><th class="tbl-th">Employee</th><th class="tbl-th">Client</th><th class="tbl-th num">Approved</th><th class="tbl-th num">Check Amt</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+      openModal(html);
+    }).catch(function(err) { toast(err.message, 'error'); });
+  }
+
+  // ==================== INSURANCE ====================
+  function loadInsurance(forceReload) {
+    var cacheKey = 'ins:' + JSON.stringify(state.insFilters);
+    if (!forceReload && state.cache[cacheKey]) {
+      state.insData = state.cache[cacheKey];
+      renderInsuranceView();
+      return;
+    }
+    var root = document.getElementById('view-root');
+    root.innerHTML = '<div class="panel"><div class="panel-body">Loading Insurance claims...</div></div>';
+    callApi('apiListInsurance', state.token, state.insFilters).then(function(res) {
+      state.cache[cacheKey] = res;
+      state.insData = res;
+      state.insFilters.page = res.pagination ? res.pagination.page : 1;
+      renderInsuranceView();
+    }).catch(function(err) {
+      root.innerHTML = '<div class="auth-alert auth-alert-error">' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderInsuranceView() {
+    var f = state.insFilters;
+    var t = state.insData.totals || {};
+    var items = state.insData.items || [];
+    var pg = state.insData.pagination;
+    var html = '';
+
+    html += '<div class="filter-bar">' +
+      '<div class="filter-group filter-grow"><label class="form-label">Search (Employee, SIIP-ANHDA Ref, Remarks)</label>' +
+        '<input id="ins-f-search" class="form-input" value="' + esc(f.search) + '" placeholder="Type name or SIIP-ANHDA-..." /></div>' +
+      '<div class="filter-group"><label class="form-label">Client</label>' +
+        '<select id="ins-f-client" class="form-select">' + masterOptions('CLIENT', f.client, 'All Clients') + '</select></div>' +
+      '<div class="filter-group"><label class="form-label">Expense Bearer</label>' +
+        '<select id="ins-f-bearer" class="form-select">' + masterOptions('EXPENSE_BEARER', f.expenseBearer, 'All') + '</select></div>' +
+      '<div class="filter-group"><label class="form-label">Stage</label>' +
+        '<select id="ins-f-stage" class="form-select"><option value="">All Stages</option>' +
+        ['SUBMITTED', 'PENDING_BANK', 'CREDITED', 'DONE', 'DISALLOWED_BALANCE'].map(function(st) {
+          return '<option value="' + st + '"' + (f.stage === st ? ' selected' : '') + '>' + st.replace(/_/g, ' ') + '</option>';
+        }).join('') + '</select></div>' +
+      '<div class="filter-group" style="min-width:auto;"><label class="filter-check"><input id="ins-f-bal" type="checkbox"' + (f.openBalanceOnly ? ' checked' : '') + ' /> Open Balance Only</label></div>' +
+      '<button id="ins-f-apply" type="button" class="btn btn-primary btn-sm">Filter</button>' +
+      (state.permissions.canCreateInsurance ? '<button id="ins-new-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('plus', 'sm') + '<span data-btn-label>New Insurance Claim</span></button>' : '') +
+      '<button id="ins-export-btn" type="button" class="btn btn-sm">' + renderIcon('download', 'sm') + '<span data-btn-label>Export CSV</span></button>' +
+    '</div>';
+
+    html += '<div class="kpi-grid">' +
+      '<div class="kpi-card"><div class="kpi-label">Cases</div><div class="kpi-value">' + (t.count || 0) + '</div><div class="kpi-meta">Company: ' + (t.company_expense_count || 0) + ' | Employee: ' + (t.employee_expense_count || 0) + '</div></div>' +
+      '<div class="kpi-card"><div class="kpi-label">Amount Released</div><div class="kpi-value">' + fmtPhp(t.amount_released) + '</div></div>' +
+      '<div class="kpi-card kpi-ok"><div class="kpi-label">Amount Reimbursed</div><div class="kpi-value">' + fmtPhp(t.amount_reimbursed) + '</div></div>' +
+      '<div class="kpi-card kpi-danger"><div class="kpi-label">Open / Disallowed Balance</div><div class="kpi-value">' + fmtPhp(t.open_balance_amount) + '</div></div>' +
+    '</div>';
+
+    html += '<div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+      '<th class="tbl-th">No.</th><th class="tbl-th">Employee</th><th class="tbl-th">Accident / Submit</th>' +
+      '<th class="tbl-th">Client / Bearer</th><th class="tbl-th">Insurance Ref</th><th class="tbl-th num">Released</th>' +
+      '<th class="tbl-th num">Reimbursed</th><th class="tbl-th num">Balance</th><th class="tbl-th">Bank Credit</th>' +
+      '<th class="tbl-th">Stage</th></tr></thead><tbody>';
+
+    if (items.length === 0) {
+      html += '<tr><td colspan="10" class="tbl-td muted">No Insurance claims match the selected filters.</td></tr>';
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        var r = items[i];
+        var bal = r.balance_variance === '' ? 0 : Number(r.balance_variance);
+        html += '<tr class="tbl-row is-clickable ' + (Math.abs(bal) > 0.009 ? 'row-variance' : '') + '" data-ins-id="' + esc(r.id) + '">' +
+          '<td class="tbl-td mono">' + esc(r.seq_no || r.id) + '</td>' +
+          '<td class="tbl-td fw-600">' + esc(r.employee_name) + '</td>' +
+          '<td class="tbl-td mono"><div>Acc: ' + esc(r.date_of_accident || '—') + '</div><div class="muted">Sub: ' + esc(r.date_of_submission || '—') + '</div></td>' +
+          '<td class="tbl-td"><div>' + esc(r.client_assigned) + '</div><div class="muted">' + esc(r.expense_bearer) + '</div></td>' +
+          '<td class="tbl-td mono">' + esc(r.insurance_ref_no || '—') + '</td>' +
+          '<td class="tbl-td num fw-600">' + fmtPhp(r.amount_released) + '</td>' +
+          '<td class="tbl-td num">' + fmtPhp(r.amount_reimbursed) + '</td>' +
+          '<td class="tbl-td num fw-600">' + fmtPhp(r.balance_variance) + '</td>' +
+          '<td class="tbl-td"><div>' + esc(r.bank_status) + '</div><div class="muted">' + esc(r.date_credited || '—') + '</div></td>' +
+          '<td class="tbl-td">' + stageBadge(r.workflow_stage) + '</td></tr>';
+      }
+    }
+    html += '</tbody></table>' + renderPaginationBar(pg, 'ins', [10, 25, 50, 100]) + '</div>';
+    document.getElementById('view-root').innerHTML = html;
+
+    function applyInsFilters() {
+      state.insFilters.search = document.getElementById('ins-f-search').value;
+      state.insFilters.client = document.getElementById('ins-f-client').value;
+      state.insFilters.expenseBearer = document.getElementById('ins-f-bearer').value;
+      state.insFilters.stage = document.getElementById('ins-f-stage').value;
+      state.insFilters.openBalanceOnly = document.getElementById('ins-f-bal').checked;
+      state.insFilters.page = 1;
+      loadInsurance();
+    }
+
+    document.getElementById('ins-f-apply').addEventListener('click', applyInsFilters);
+    document.getElementById('ins-f-search').addEventListener('input', function() {
+      debounceRun('ins-search', function() {
+        var el = document.getElementById('ins-f-search');
+        if (el) {
+          state.insFilters.search = el.value;
+          state.insFilters.page = 1;
+          loadInsurance();
+        }
+      }, 350);
+    });
+    document.getElementById('ins-f-search').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') applyInsFilters();
+    });
+    ['ins-f-client', 'ins-f-bearer', 'ins-f-stage', 'ins-f-bal'].forEach(function(id) {
+      document.getElementById(id).addEventListener('change', applyInsFilters);
+    });
+
+    bindPaginationBar('ins', pg, function(nextPage) {
+      state.insFilters.page = nextPage;
+      loadInsurance();
+    }, function(nextSize) {
+      state.insFilters.pageSize = nextSize;
+      state.insFilters.page = 1;
+      loadInsurance();
+    });
+
+    var newBtn = document.getElementById('ins-new-btn');
+    if (newBtn) newBtn.addEventListener('click', function() { openInsuranceDrawer(null); });
+    document.getElementById('ins-export-btn').addEventListener('click', function() {
+      downloadCsvExport('INSURANCE', state.insFilters);
+    });
+    document.querySelectorAll('[data-ins-id]').forEach(function(row) {
+      row.addEventListener('click', function() {
+        var id = row.getAttribute('data-ins-id');
+        var rec = state.insData.items.find(function(x) { return x.id === id; });
+        if (rec) openInsuranceDrawer(rec);
+      });
+    });
+  }
+
+  function openInsuranceDrawer(record) {
+    var isCreate = !record;
+    var r = record || {
+      seq_no: '', employee_name: '', date_of_accident: '', accident_type: 'WORK-RELATED',
+      expense_bearer: 'COMPANY EXPENSE', client_assigned: 'VMC', insurance_ref_no: '',
+      amount_released: '', date_of_submission: new Date().toISOString().slice(0, 10),
+      reimbursed_date: '', amount_reimbursed: '', disallowance_reason: '', hr_remarks: '',
+      bank_status: 'PENDING', date_credited: '', amount_credited: '', bank_notes: '',
+      check_required: false, date_of_check: '', check_amount: '', check_no: '',
+      final_status: '', check_notes: ''
+    };
+
+    var hrEditable = canEditField('INSURANCE', 'employee_name');
+    var bankEditable = canEditField('INSURANCE', 'date_credited');
+    var checkEditable = canEditField('INSURANCE', 'final_status');
+
+    document.getElementById('drawer-kicker').textContent = isCreate ? 'New Insurance Claim' : ('Insurance ' + r.id + ' (#' + r.seq_no + ')');
+    document.getElementById('drawer-title').textContent = isCreate ? 'File New Insurance / Accident Claim' : r.employee_name;
+
+    var body = '<form id="ins-drawer-form">' +
+      '<div id="ins-live-balance" class="banner-alert hidden"></div>' +
+      '<div class="section-card sec-hr ' + (!hrEditable ? 'is-locked' : '') + '">' +
+        '<div class="section-card-head"><span>1. HR Department (Accident &amp; Insurance Submission)</span><span>' + (hrEditable ? 'Editable' : 'Locked') + '</span></div>' +
+        '<div class="section-card-body">' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group" style="grid-column:span 2;"><label class="form-label">Employee Name</label><input name="employee_name" class="form-input" value="' + esc(r.employee_name) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Client Assigned</label><select name="client_assigned" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('CLIENT', r.client_assigned, '') + '</select></div>' +
+          '</div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Date of Accident</label><input name="date_of_accident" type="date" class="form-input" value="' + esc(r.date_of_accident) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Accident Type</label><select name="accident_type" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('ACCIDENT_TYPE', r.accident_type) + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Expense Bearer</label><select name="expense_bearer" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('EXPENSE_BEARER', r.expense_bearer) + '</select></div>' +
+          '</div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Insurance Ref (SIIP-ANHDA-...)</label><input name="insurance_ref_no" class="form-input mono" value="' + esc(r.insurance_ref_no) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Date of Submission</label><input name="date_of_submission" type="date" class="form-input" value="' + esc(r.date_of_submission) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Amount Released (PHP)</label><input name="amount_released" type="number" step="0.01" min="0" class="form-input" value="' + esc(r.amount_released) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-2">' +
+            '<div class="form-group"><label class="form-label">Reimbursed Date</label><input name="reimbursed_date" type="date" class="form-input" value="' + esc(r.reimbursed_date) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Amount Reimbursed (PHP)</label><input name="amount_reimbursed" type="number" step="0.01" class="form-input" value="' + esc(r.amount_reimbursed) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-2">' +
+            '<div class="form-group"><label class="form-label">Disallowance Reason</label><input name="disallowance_reason" class="form-input" value="' + esc(r.disallowance_reason) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">HR Remarks</label><input name="hr_remarks" class="form-input" value="' + esc(r.hr_remarks) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="section-card sec-bank ' + (!bankEditable ? 'is-locked' : '') + '">' +
+        '<div class="section-card-head"><span>2. Assigned Bank Account Accounting</span><span>' + (bankEditable ? 'Editable' : 'Locked') + '</span></div>' +
+        '<div class="section-card-body">' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Bank Status</label><select name="bank_status" class="form-select" ' + (!bankEditable ? 'disabled' : '') + '>' +
+              '<option value="PENDING"' + (r.bank_status === 'PENDING' ? ' selected' : '') + '>PENDING</option>' + masterOptions('BANK', r.bank_status) + '</select></div>' +
+            '<div class="form-group"><label class="form-label">Date Credited</label><input name="date_credited" type="date" class="form-input" value="' + esc(r.date_credited) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Amount Credited (PHP)</label><input name="amount_credited" type="number" step="0.01" class="form-input" value="' + esc(r.amount_credited) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-group"><label class="form-label">Bank Notes</label><input name="bank_notes" class="form-input" value="' + esc(r.bank_notes) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="section-card sec-check ' + (!checkEditable ? 'is-locked' : '') + '">' +
+        '<div class="section-card-head"><span>3. Check Issuance / Closure</span><span>' + (checkEditable ? 'Editable' : 'Locked') + '</span></div>' +
+        '<div class="section-card-body">' +
+          '<div class="form-grid-2">' +
+            '<div class="form-group"><label class="form-label"><input name="check_required" type="checkbox" ' + (r.check_required ? 'checked' : '') + ' ' + (!checkEditable ? 'disabled' : '') + '/> Check Required (unchecked = N/A for Company Expense)</label></div>' +
+            '<div class="form-group"><label class="form-label">Final Status</label><select name="final_status" class="form-select" ' + (!checkEditable ? 'disabled' : '') + '><option value="">Open</option><option value="DONE"' + (r.final_status === 'DONE' ? ' selected' : '') + '>DONE</option></select></div>' +
+          '</div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Date of Check</label><input name="date_of_check" type="date" class="form-input" value="' + esc(r.date_of_check) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Check Amount (PHP)</label><input name="check_amount" type="number" step="0.01" class="form-input" value="' + esc(r.check_amount) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Check #</label><input name="check_no" class="form-input mono" value="' + esc(r.check_no) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-group"><label class="form-label">Check / Closure Notes</label><input name="check_notes" class="form-input" value="' + esc(r.check_notes) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+        '</div>' +
+      '</div>' +
+    '</form>';
+
+    var foot = '<div>' +
+      (!isCreate && state.permissions.canDelete
+        ? '<button id="ins-delete-btn" type="button" class="btn btn-danger btn-sm">' + renderIcon('trash', 'sm') + '<span data-btn-label>Delete</span></button>'
+        : '') +
+      '</div><div style="display:flex;gap:8px;">' +
+      '<button id="drawer-cancel-btn" type="button" class="btn btn-sm">Cancel</button>' +
+      (hrEditable || bankEditable || checkEditable
+        ? '<button id="ins-save-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('check', 'sm') + '<span data-btn-label>Save Claim</span></button>'
+        : '') +
+      '</div>';
+
+    openDrawer(body, foot);
+
+    var form = document.getElementById('ins-drawer-form');
+    function syncCheckFields() {
+      var bearer = form.expense_bearer.value;
+      if (hrEditable && isCreate) {
+        form.check_required.checked = (bearer === 'EMPLOYEE EXPENSE');
+      }
+      var req = form.check_required.checked;
+      if (!req && checkEditable) {
+        form.date_of_check.disabled = true;
+        form.check_amount.disabled = true;
+        form.check_no.disabled = true;
+      } else if (checkEditable) {
+        form.date_of_check.disabled = false;
+        form.check_amount.disabled = false;
+        form.check_no.disabled = false;
+      }
+      var rel = Number(form.amount_released.value) || 0;
+      var reimb = form.amount_reimbursed.value !== '' ? Number(form.amount_reimbursed.value) : 0;
+      var bal = rel - reimb;
+      var el = document.getElementById('ins-live-balance');
+      if (rel > 0 && Math.abs(bal) > 0.009) {
+        el.innerHTML = renderIcon('alert', 'sm') + '<span><strong>Balance / Variance:</strong> ' + fmtPhp(bal) + ' (Released − Reimbursed)</span>';
+        el.classList.remove('hidden');
+      } else {
+        el.classList.add('hidden');
+      }
+    }
+    syncCheckFields();
+    form.addEventListener('input', syncCheckFields);
+    form.addEventListener('change', syncCheckFields);
+
+    var saveBtn = document.getElementById('ins-save-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function() {
+        var payload = isCreate ? {} : { id: r.id };
+        var fields = ['employee_name', 'client_assigned', 'date_of_accident', 'accident_type', 'expense_bearer', 'insurance_ref_no', 'date_of_submission', 'amount_released', 'reimbursed_date', 'amount_reimbursed', 'disallowance_reason', 'hr_remarks', 'bank_status', 'date_credited', 'amount_credited', 'bank_notes', 'date_of_check', 'check_amount', 'check_no', 'final_status', 'check_notes'];
+        fields.forEach(function(fn) {
+          if (form[fn] && !form[fn].disabled) payload[fn] = form[fn].value;
+        });
+        if (form.check_required && !form.check_required.disabled) {
+          payload.check_required = form.check_required.checked;
+        }
+        setBtnLoading(saveBtn, true, 'Saving...', 'Save Claim');
+        callApi('apiSaveInsurance', state.token, payload).then(function(res) {
+          closeDrawer();
+          invalidateClientCache();
+          toast('Insurance claim saved (' + res.record.id + ').', 'ok');
+          if (state.activeView === 'dashboard') loadDashboard(true);
+          else loadInsurance(true);
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(saveBtn, false, 'Saving...', 'Save Claim');
+        });
+      });
+    }
+
+    var delBtn = document.getElementById('ins-delete-btn');
+    if (delBtn) {
+      delBtn.addEventListener('click', function() {
+        if (!confirm('Soft-delete Insurance claim ' + r.id + '?')) return;
+        setBtnLoading(delBtn, true, 'Deleting...', 'Delete');
+        callApi('apiDeleteInsurance', state.token, r.id).then(function() {
+          closeDrawer();
+          invalidateClientCache();
+          toast('Insurance claim deleted.', 'ok');
+          loadInsurance(true);
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(delBtn, false, 'Deleting...', 'Delete');
+        });
+      });
+    }
+  }
+
+  // ==================== EMPLOYEE LOOKUP ====================
+  function renderEmployeesView() {
+    var html = '<div class="filter-bar">' +
+      '<div class="filter-group filter-grow"><label class="form-label">Search Employee Name, SS Number, or Claim Ref</label>' +
+        '<input id="emp-search-input" class="form-input" value="' + esc(state.empQuery) + '" placeholder="e.g. ALGARME, ALOTA, DINSON, 07-1310081-5..." /></div>' +
+      '<button id="emp-search-btn" type="button" class="btn btn-primary btn-sm">Lookup History</button>' +
+    '</div><div id="emp-results-mount"></div>';
+    document.getElementById('view-root').innerHTML = html;
+
+    function runSearch() {
+      state.empQuery = document.getElementById('emp-search-input').value.trim();
+      if (!state.empQuery) return;
+      state.empPage.page = 1;
+      document.getElementById('emp-results-mount').innerHTML = '<div class="panel"><div class="panel-body">Searching across SSS &amp; Insurance...</div></div>';
+      callApi('apiEmployeeHistory', state.token, state.empQuery).then(function(res) {
+        state.empResults = res;
+        renderEmployeeResults();
+      }).catch(function(err) {
+        toast(err.message, 'error');
+      });
+    }
+    document.getElementById('emp-search-btn').addEventListener('click', runSearch);
+    document.getElementById('emp-search-input').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') runSearch();
+    });
+    if (state.empResults) renderEmployeeResults();
+  }
+
+  function renderEmployeeResults() {
+    var mount = document.getElementById('emp-results-mount');
+    var res = state.empResults;
+    if (!res || !res.employees.length) {
+      mount.innerHTML = '<div class="panel"><div class="panel-body muted">No matching employees found.</div></div>';
+      return;
+    }
+    var paged = sliceClientPage(res.employees, state.empPage.page, state.empPage.pageSize);
+    state.empPage.page = paged.pagination.page;
+
+    var html = '<div class="panel" style="margin-bottom:12px;">' + renderPaginationBar(paged.pagination, 'emp', [5, 10, 25]) + '</div>';
+    for (var i = 0; i < paged.items.length; i++) {
+      var emp = paged.items[i];
+      html += '<div class="panel">' +
+        '<div class="panel-head"><h3 class="panel-title">' + esc(emp.display_name) + '</h3>' +
+        '<span class="mono muted">SS #: ' + esc(emp.ss_number || 'N/A') + ' | Clients: ' + esc(emp.clients.join(', ')) + '</span></div>' +
+        '<div class="panel-body">' +
+          '<div class="kpi-grid">' +
+            '<div class="kpi-card"><div class="kpi-label">SSS Claims (' + emp.totals.sss_count + ')</div><div class="kpi-value">' + fmtPhp(emp.totals.sss_approved) + '</div><div class="kpi-meta">Credited: ' + fmtPhp(emp.totals.sss_credited) + '</div></div>' +
+            '<div class="kpi-card kpi-ok"><div class="kpi-label">Insurance Claims (' + emp.totals.insurance_count + ')</div><div class="kpi-value">' + fmtPhp(emp.totals.insurance_released) + '</div><div class="kpi-meta">Reimbursed: ' + fmtPhp(emp.totals.insurance_reimbursed) + '</div></div>' +
+          '</div>' +
+          (emp.sss_claims.length ? '<h4 style="margin:6px 0;">SSS History</h4><div class="tbl-wrap" style="margin-bottom:10px;"><table class="tbl"><thead><tr><th class="tbl-th">Filing Date</th><th class="tbl-th">Claim Ref</th><th class="tbl-th">Type</th><th class="tbl-th num">Approved</th><th class="tbl-th">Stage</th></tr></thead><tbody>' +
+            emp.sss_claims.map(function(c) {
+              return '<tr class="tbl-row"><td class="tbl-td mono">' + esc(c.filing_date) + '</td><td class="tbl-td mono">' + esc(c.claim_ref_no) + '</td><td class="tbl-td">' + esc(c.benefit_type) + '</td><td class="tbl-td num">' + fmtPhp(c.amount_to_release) + '</td><td class="tbl-td">' + stageBadge(c.workflow_stage) + '</td></tr>';
+            }).join('') + '</tbody></table></div>' : '') +
+          (emp.insurance_claims.length ? '<h4 style="margin:6px 0;">Insurance / Accident History</h4><div class="tbl-wrap"><table class="tbl"><thead><tr><th class="tbl-th">Accident</th><th class="tbl-th">Ref</th><th class="tbl-th">Bearer</th><th class="tbl-th num">Released</th><th class="tbl-th num">Reimbursed</th><th class="tbl-th">Stage</th></tr></thead><tbody>' +
+            emp.insurance_claims.map(function(c) {
+              return '<tr class="tbl-row"><td class="tbl-td mono">' + esc(c.date_of_accident || c.date_of_submission) + '</td><td class="tbl-td mono">' + esc(c.insurance_ref_no || '—') + '</td><td class="tbl-td">' + esc(c.expense_bearer) + '</td><td class="tbl-td num">' + fmtPhp(c.amount_released) + '</td><td class="tbl-td num">' + fmtPhp(c.amount_reimbursed) + '</td><td class="tbl-td">' + stageBadge(c.workflow_stage) + '</td></tr>';
+            }).join('') + '</tbody></table></div>' : '') +
+        '</div></div>';
+    }
+    if (paged.pagination.totalPages > 1) {
+      html += '<div class="panel">' + renderPaginationBar(paged.pagination, 'emp-bot', [5, 10, 25]) + '</div>';
+    }
+    mount.innerHTML = html;
+
+    bindPaginationBar('emp', paged.pagination, function(pg) {
+      state.empPage.page = pg;
+      renderEmployeeResults();
+    }, function(sz) {
+      state.empPage.pageSize = sz;
+      state.empPage.page = 1;
+      renderEmployeeResults();
+    });
+    bindPaginationBar('emp-bot', paged.pagination, function(pg) {
+      state.empPage.page = pg;
+      renderEmployeeResults();
+    }, function(sz) {
+      state.empPage.pageSize = sz;
+      state.empPage.page = 1;
+      renderEmployeeResults();
+    });
+  }
+
+  // ==================== IMPORT & REPORTS ====================
+  function renderImportView() {
+    var rawOpts = '<option value="">-- Or select an existing Google Sheet tab --</option>' +
+      state.rawSheets.map(function(n) { return '<option value="' + esc(n) + '">' + esc(n) + '</option>'; }).join('');
+    var html = '<div class="dash-grid">' +
+      '<div class="panel"><div class="panel-head"><h3 class="panel-title">Export Monitoring Reports</h3></div>' +
+        '<div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<button id="exp-sss-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('download', 'sm') + '<span data-btn-label>Download SSS CSV</span></button>' +
+          '<button id="exp-ins-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('download', 'sm') + '<span data-btn-label>Download Insurance CSV</span></button>' +
+          '<button id="exp-print-btn" type="button" class="btn btn-sm">' + renderIcon('printer', 'sm') + '<span data-btn-label>Print Current View</span></button>' +
+        '</div></div>' +
+      '<div class="panel"><div class="panel-head"><h3 class="panel-title">Legacy Spreadsheet Importer (2025 / 2026 / Insurance)</h3></div>' +
+        '<div class="panel-body">' +
+          (!state.permissions.canImport
+            ? '<div class="muted">Only HR Department or System Admin can import historical records.</div>'
+            : '<div class="form-grid-2">' +
+                '<div class="form-group"><label class="form-label">Target Module</label><select id="imp-mod" class="form-select"><option value="SSS">SSS Sickness &amp; Maternity</option><option value="INSURANCE">Insurance / Accident</option></select></div>' +
+                '<div class="form-group"><label class="form-label">Bound Sheet Tab (Optional)</label><select id="imp-sheet" class="form-select">' + rawOpts + '</select></div>' +
+              '</div>' +
+              '<div class="form-group"><label class="form-label">Upload .CSV File or Paste CSV Content Below</label><input id="imp-file" type="file" accept=".csv,text/csv" class="form-input" style="margin-bottom:6px;" /><textarea id="imp-csv" rows="5" class="form-textarea mono" placeholder="Paste your SSS 2025/2026 or Insurance CSV export here..."></textarea></div>' +
+              '<button id="imp-preview-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('upload', 'sm') + '<span data-btn-label>Preview &amp; Check Anomalies</span></button>') +
+        '</div></div></div>' +
+      '<div id="imp-preview-mount"></div>';
+
+    document.getElementById('view-root').innerHTML = html;
+    document.getElementById('exp-sss-btn').addEventListener('click', function() { downloadCsvExport('SSS', {}); });
+    document.getElementById('exp-ins-btn').addEventListener('click', function() { downloadCsvExport('INSURANCE', {}); });
+    document.getElementById('exp-print-btn').addEventListener('click', function() { window.print(); });
+
+    var fileEl = document.getElementById('imp-file');
+    if (fileEl) {
+      fileEl.addEventListener('change', function() {
+        var f = fileEl.files[0];
+        if (!f) return;
+        var reader = new FileReader();
+        reader.onload = function() { document.getElementById('imp-csv').value = reader.result || ''; };
+        reader.readAsText(f);
+      });
+    }
+
+    var prevBtn = document.getElementById('imp-preview-btn');
+    if (prevBtn) {
+      prevBtn.addEventListener('click', function() {
+        var mod = document.getElementById('imp-mod').value;
+        var sheetName = document.getElementById('imp-sheet').value;
+        var csvText = document.getElementById('imp-csv').value;
+        setBtnLoading(prevBtn, true, 'Analyzing...', 'Preview & Check Anomalies');
+        callApi('apiPreviewImport', state.token, { targetModule: mod, sheetName: sheetName, csvText: csvText }).then(function(res) {
+          state.importPreview = res;
+          state.impPage.page = 1;
+          state.impPage.anomaliesOnly = false;
+          setBtnLoading(prevBtn, false, 'Analyzing...', 'Preview & Check Anomalies');
+          renderImportPreview();
+        }).catch(function(err) {
+          toast(err.message, 'error');
+          setBtnLoading(prevBtn, false, 'Analyzing...', 'Preview & Check Anomalies');
+        });
+      });
+    }
+    if (state.importPreview) renderImportPreview();
+  }
+
+  function renderImportPreview() {
+    var p = state.importPreview;
+    var mount = document.getElementById('imp-preview-mount');
+    if (!p) return;
+
+    var indexed = [];
+    for (var idx = 0; idx < p.previewRows.length; idx++) {
+      var rw = p.previewRows[idx];
+      if (state.impPage.anomaliesOnly && (!rw.anomalies || rw.anomalies.length === 0)) continue;
+      indexed.push({ origIdx: idx, row: rw });
+    }
+    var paged = sliceClientPage(indexed, state.impPage.page, state.impPage.pageSize);
+    state.impPage.page = paged.pagination.page;
+
+    var rowsHtml = paged.items.map(function(entry) {
+      var row = entry.row;
+      var rec = row.record;
+      var label = p.targetModule === 'SSS' ? (rec.claim_ref_no + ' — ' + rec.employee_name) : ('#' + rec.seq_no + ' — ' + rec.employee_name);
+      var amt = p.targetModule === 'SSS' ? fmtPhp(rec.amount_to_release) : fmtPhp(rec.amount_released);
+      var anoms = row.anomalies.map(function(a) { return a.code + ': ' + a.message; }).join(' | ');
+      return '<tr class="tbl-row ' + (row.anomalies.length ? 'row-variance' : '') + '">' +
+        '<td class="tbl-td"><input type="checkbox" data-imp-skip="' + entry.origIdx + '" ' + (!row.skipImport ? 'checked' : '') + ' /></td>' +
+        '<td class="tbl-td mono">' + row.sourceLine + ' (' + esc(row.sourceLayout) + ')</td>' +
+        '<td class="tbl-td fw-600">' + esc(label) + '</td>' +
+        '<td class="tbl-td num">' + amt + '</td>' +
+        '<td class="tbl-td">' + stageBadge(rec.workflow_stage) + '</td>' +
+        '<td class="tbl-td">' + (anoms ? '<span class="status-badge badge-danger">' + esc(anoms) + '</span>' : '<span class="status-badge badge-ok">CLEAN</span>') + '</td></tr>';
+    }).join('');
+
+    mount.innerHTML = '<div class="panel"><div class="panel-head"><h3 class="panel-title">Import Preview (' + p.parsedRowsCount + ' parsed, ' + p.skippedRows + ' skipped, ' + p.anomalyRows + ' anomalies)</h3>' +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+        '<label class="form-label" style="margin:0;"><input id="imp-anom-only" type="checkbox"' + (state.impPage.anomaliesOnly ? ' checked' : '') + ' /> Anomalies Only</label>' +
+        '<button id="imp-select-all" type="button" class="btn btn-sm">Select All</button>' +
+        '<button id="imp-deselect-all" type="button" class="btn btn-sm">Deselect All</button>' +
+        '<button id="imp-commit-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('check', 'sm') + '<span data-btn-label>Commit Selected Rows</span></button>' +
+      '</div></div>' +
+      '<div class="tbl-wrap" style="border:none;"><table class="tbl"><thead><tr><th class="tbl-th">Import</th><th class="tbl-th">Source</th><th class="tbl-th">Record</th><th class="tbl-th num">Amount</th><th class="tbl-th">Stage</th><th class="tbl-th">Anomalies</th></tr></thead><tbody>' +
+      (rowsHtml || '<tr><td colspan="6" class="tbl-td muted">No rows match the preview filter.</td></tr>') +
+      '</tbody></table></div>' + renderPaginationBar(paged.pagination, 'imp', [10, 25, 50, 100]) + '</div>';
+
+    document.getElementById('imp-anom-only').addEventListener('change', function(e) {
+      state.impPage.anomaliesOnly = e.target.checked;
+      state.impPage.page = 1;
+      renderImportPreview();
+    });
+    document.getElementById('imp-select-all').addEventListener('click', function() {
+      for (var k = 0; k < indexed.length; k++) indexed[k].row.skipImport = false;
+      renderImportPreview();
+    });
+    document.getElementById('imp-deselect-all').addEventListener('click', function() {
+      for (var k = 0; k < indexed.length; k++) indexed[k].row.skipImport = true;
+      renderImportPreview();
+    });
+
+    bindPaginationBar('imp', paged.pagination, function(pg) {
+      state.impPage.page = pg;
+      renderImportPreview();
+    }, function(sz) {
+      state.impPage.pageSize = sz;
+      state.impPage.page = 1;
+      renderImportPreview();
+    });
+
+    mount.querySelectorAll('[data-imp-skip]').forEach(function(cb) {
+      cb.addEventListener('change', function() {
+        var i = parseInt(cb.getAttribute('data-imp-skip'), 10);
+        state.importPreview.previewRows[i].skipImport = !cb.checked;
+      });
+    });
+
+    document.getElementById('imp-commit-btn').addEventListener('click', function() {
+      var btn = document.getElementById('imp-commit-btn');
+      setBtnLoading(btn, true, 'Importing...', 'Commit Selected Rows');
+      callApi('apiCommitImport', state.token, {
+        targetModule: state.importPreview.targetModule,
+        rows: state.importPreview.previewRows
+      }).then(function(res) {
+        invalidateClientCache();
+        toast('Imported ' + res.importedCount + ' records (skipped ' + res.skippedDuplicatesCount + ').', 'ok');
+        state.importPreview = null;
+        renderImportView();
+      }).catch(function(err) {
+        toast(err.message, 'error');
+        setBtnLoading(btn, false, 'Importing...', 'Commit Selected Rows');
+      });
+    });
+  }
+
+  function downloadCsvExport(moduleName, filters) {
+    callApi('apiExportCsv', state.token, { moduleName: moduleName, filters: filters }).then(function(res) {
+      var blob = new Blob([res.csvContent], { type: 'text/csv;charset=utf-8;' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = res.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('Exported ' + res.filename, 'ok');
+    }).catch(function(err) { toast(err.message, 'error'); });
+  }
+
+  // ==================== ADMIN (USERS & MASTERS) ====================
+  function loadAdminView(forceReload) {
+    if (!forceReload && state.cache.usersList) {
+      state.usersList = state.cache.usersList;
+      renderAdminView();
+      return;
+    }
+    var root = document.getElementById('view-root');
+    root.innerHTML = '<div class="panel"><div class="panel-body">Loading users and master lists...</div></div>';
+    callApi('apiListUsers', state.token).then(function(users) {
+      state.cache.usersList = users;
+      state.usersList = users;
+      renderAdminView();
+    }).catch(function(err) {
+      root.innerHTML = '<div class="auth-alert auth-alert-error">' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderAdminView() {
+    var pagedUsers = sliceClientPage(state.usersList || [], state.usersPage.page, state.usersPage.pageSize);
+    state.usersPage.page = pagedUsers.pagination.page;
+
+    var usersRows = pagedUsers.items.map(function(u) {
+      return '<tr class="tbl-row"><td class="tbl-td mono fw-600">' + esc(u.username) + '</td>' +
+        '<td class="tbl-td">' + esc(u.full_name) + '</td>' +
+        '<td class="tbl-td"><span class="status-badge">' + esc(u.role_label) + '</span></td>' +
+        '<td class="tbl-td"><span class="status-badge ' + (u.is_active ? 'badge-ok' : 'badge-danger') + '">' + (u.is_active ? 'ACTIVE' : 'DISABLED') + '</span></td>' +
+        '<td class="tbl-td mono muted">' + esc(u.last_login || 'Never') + '</td>' +
+        '<td class="tbl-td"><button type="button" class="btn btn-sm" data-edit-user="' + esc(u.user_id) + '">Edit</button></td></tr>';
+    }).join('');
+
+    var allMasters = state.masters.items || [];
+    var filteredMasters = state.mastersPage.category
+      ? allMasters.filter(function(m) { return m.category === state.mastersPage.category; })
+      : allMasters;
+    var pagedMasters = sliceClientPage(filteredMasters, state.mastersPage.page, state.mastersPage.pageSize);
+    state.mastersPage.page = pagedMasters.pagination.page;
+
+    var masterRows = pagedMasters.items.map(function(m) {
+      return '<tr class="tbl-row"><td class="tbl-td mono">' + esc(m.category) + '</td><td class="tbl-td mono">' + esc(m.code) + '</td><td class="tbl-td fw-600">' + esc(m.label) + '</td><td class="tbl-td"><span class="status-badge ' + (m.is_active ? 'badge-ok' : 'badge-danger') + '">' + (m.is_active ? 'ACTIVE' : 'INACTIVE') + '</span></td></tr>';
+    }).join('');
+
+    var catOpts = ['CLIENT', 'BANK', 'ERID', 'BENEFIT_TYPE', 'ACCIDENT_TYPE', 'EXPENSE_BEARER'].map(function(c) {
+      return '<option value="' + c + '"' + (state.mastersPage.category === c ? ' selected' : '') + '>' + c + '</option>';
+    }).join('');
+
+    var html = '<div class="panel"><div class="panel-head"><h3 class="panel-title">Staff Accounts &amp; Department Roles</h3>' +
+      '<button id="admin-add-user-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('plus', 'sm') + '<span data-btn-label>Add Staff User</span></button></div>' +
+      '<div class="tbl-wrap" style="border:none;"><table class="tbl"><thead><tr><th class="tbl-th">Username</th><th class="tbl-th">Full Name</th><th class="tbl-th">Role</th><th class="tbl-th">Status</th><th class="tbl-th">Last Login</th><th class="tbl-th">Action</th></tr></thead><tbody>' + usersRows + '</tbody></table></div>' +
+      renderPaginationBar(pagedUsers.pagination, 'users', [10, 15, 25, 50]) + '</div>' +
+
+      '<div class="panel"><div class="panel-head"><h3 class="panel-title">Master Lists (Clients, Banks, ERIDs, Benefit Types)</h3>' +
+      '<div style="display:flex;gap:8px;align-items:center;">' +
+        '<select id="admin-master-cat" class="pagination-size"><option value="">All Categories</option>' + catOpts + '</select>' +
+        '<button id="admin-add-master-btn" type="button" class="btn btn-primary btn-sm">' + renderIcon('plus', 'sm') + '<span data-btn-label>Add Master Item</span></button>' +
+      '</div></div>' +
+      '<div class="tbl-wrap" style="border:none;"><table class="tbl"><thead><tr><th class="tbl-th">Category</th><th class="tbl-th">Code</th><th class="tbl-th">Label</th><th class="tbl-th">Status</th></tr></thead><tbody>' + masterRows + '</tbody></table></div>' +
+      renderPaginationBar(pagedMasters.pagination, 'masters', [10, 15, 25, 50]) + '</div>';
+
+    document.getElementById('view-root').innerHTML = html;
+    document.getElementById('admin-add-user-btn').addEventListener('click', function() { openUserModal(null); });
+    document.querySelectorAll('[data-edit-user]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var uid = btn.getAttribute('data-edit-user');
+        var u = state.usersList.find(function(x) { return x.user_id === uid; });
+        if (u) openUserModal(u);
+      });
+    });
+    document.getElementById('admin-add-master-btn').addEventListener('click', openMasterModal);
+    document.getElementById('admin-master-cat').addEventListener('change', function(e) {
+      state.mastersPage.category = e.target.value;
+      state.mastersPage.page = 1;
+      renderAdminView();
+    });
+    bindPaginationBar('users', pagedUsers.pagination, function(pg) {
+      state.usersPage.page = pg;
+      renderAdminView();
+    }, function(sz) {
+      state.usersPage.pageSize = sz;
+      state.usersPage.page = 1;
+      renderAdminView();
+    });
+    bindPaginationBar('masters', pagedMasters.pagination, function(pg) {
+      state.mastersPage.page = pg;
+      renderAdminView();
+    }, function(sz) {
+      state.mastersPage.pageSize = sz;
+      state.mastersPage.page = 1;
+      renderAdminView();
+    });
+  }
+
+  function openUserModal(u) {
+    var isNew = !u;
+    var user = u || { username: '', full_name: '', email: '', role: 'HR', is_active: true };
+    var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h3 style="margin:0;">' + (isNew ? 'Add Staff User' : 'Edit User: ' + esc(user.username)) + '</h3><button type="button" class="btn btn-sm" id="modal-close-btn">Close</button></div>' +
+      '<form id="user-modal-form">' +
+      '<div class="form-grid-2"><div class="form-group"><label class="form-label">Username</label><input name="username" class="form-input" value="' + esc(user.username) + '" required /></div>' +
+      '<div class="form-group"><label class="form-label">Full Name</label><input name="full_name" class="form-input" value="' + esc(user.full_name) + '" required /></div></div>' +
+      '<div class="form-grid-2"><div class="form-group"><label class="form-label">Department Role</label><select name="role" class="form-select">' +
+      ['ADMIN', 'HR', 'BANK_ACCOUNTING', 'CHECK_ISSUANCE', 'VIEWER'].map(function(rl) {
+        return '<option value="' + rl + '"' + (user.role === rl ? ' selected' : '') + '>' + rl + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="form-group"><label class="form-label">' + (isNew ? 'Initial Password (min 8 chars)' : 'Reset Password (leave blank to keep)') + '</label><input name="password" type="password" class="form-input" ' + (isNew ? 'required' : '') + '/></div></div>' +
+      '<div class="form-group"><label class="form-label"><input name="is_active" type="checkbox" ' + (user.is_active ? 'checked' : '') + '/> Account Active</label></div>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Save User</button></form>';
+    openModal(html);
+    document.getElementById('user-modal-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var f = e.target;
+      callApi('apiSaveUser', state.token, {
+        user_id: user.user_id || '',
+        username: f.username.value,
+        full_name: f.full_name.value,
+        role: f.role.value,
+        password: f.password.value,
+        is_active: f.is_active.checked
+      }).then(function() {
+        closeModal();
+        invalidateClientCache();
+        toast('User saved.', 'ok');
+        loadAdminView(true);
+      }).catch(function(err) { toast(err.message, 'error'); });
+    });
+  }
+
+  function openMasterModal() {
+    var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><h3 style="margin:0;">Add Master List Item</h3><button type="button" class="btn btn-sm" id="modal-close-btn">Close</button></div>' +
+      '<form id="master-modal-form">' +
+      '<div class="form-group"><label class="form-label">Category</label><select name="category" class="form-select"><option value="CLIENT">CLIENT</option><option value="BANK">BANK</option><option value="ERID">ERID</option><option value="BENEFIT_TYPE">BENEFIT_TYPE</option></select></div>' +
+      '<div class="form-grid-2"><div class="form-group"><label class="form-label">Code</label><input name="code" class="form-input" required /></div>' +
+      '<div class="form-group"><label class="form-label">Label</label><input name="label" class="form-input" required /></div></div>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Save Master Item</button></form>';
+    openModal(html);
+    document.getElementById('master-modal-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var f = e.target;
+      callApi('apiSaveMasterItem', state.token, {
+        category: f.category.value,
+        code: f.code.value,
+        label: f.label.value
+      }).then(function(res) {
+        state.masters = res.masters;
+        closeModal();
+        invalidateClientCache();
+        toast('Master list item added.', 'ok');
+        renderAdminView();
+      }).catch(function(err) { toast(err.message, 'error'); });
+    });
+  }
+
+  // ==================== AUDIT LOG ====================
+  function loadAuditView(forceReload) {
+    var cacheKey = 'audit:' + JSON.stringify(state.auditFilters);
+    if (!forceReload && state.cache[cacheKey]) {
+      state.auditData = state.cache[cacheKey];
+      renderAuditView();
+      return;
+    }
+    var root = document.getElementById('view-root');
+    root.innerHTML = '<div class="panel"><div class="panel-body">Loading audit logs...</div></div>';
+    callApi('apiListAuditLogs', state.token, state.auditFilters).then(function(res) {
+      state.cache[cacheKey] = res;
+      state.auditData = res;
+      state.auditFilters.page = res.pagination ? res.pagination.page : 1;
+      renderAuditView();
+    }).catch(function(err) {
+      root.innerHTML = '<div class="auth-alert auth-alert-error">' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderAuditView() {
+    var f = state.auditFilters;
+    var logs = state.auditData.items || [];
+    var pg = state.auditData.pagination;
+
+    var modOpts = ['SSS', 'INSURANCE', 'AUTH', 'USERS', 'MASTERS'].map(function(m) {
+      return '<option value="' + m + '"' + (f.module === m ? ' selected' : '') + '>' + m + '</option>';
+    }).join('');
+
+    var rows = logs.map(function(l) {
+      return '<tr class="tbl-row"><td class="tbl-td mono">' + esc(l.timestamp) + '</td>' +
+        '<td class="tbl-td fw-600">' + esc(l.actor_username) + ' <span class="muted">(' + esc(l.actor_role) + ')</span></td>' +
+        '<td class="tbl-td"><span class="status-badge">' + esc(l.module) + '</span></td>' +
+        '<td class="tbl-td mono">' + esc(l.record_id) + '</td>' +
+        '<td class="tbl-td">' + esc(l.action) + '</td>' +
+        '<td class="tbl-td">' + esc(l.summary) + '<div class="mono muted">' + esc(l.changed_fields_json) + '</div></td></tr>';
+    }).join('');
+
+    var html = '<div class="filter-bar">' +
+      '<div class="filter-group filter-grow"><label class="form-label">Search Audit Trail</label><input id="aud-f-search" class="form-input" value="' + esc(f.search) + '" placeholder="Actor, record ID, summary, or field..." /></div>' +
+      '<div class="filter-group"><label class="form-label">Module</label><select id="aud-f-mod" class="form-select"><option value="">All Modules</option>' + modOpts + '</select></div>' +
+      '<button id="aud-f-apply" type="button" class="btn btn-primary btn-sm">Filter</button>' +
+    '</div>' +
+    '<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="tbl-th">Timestamp</th><th class="tbl-th">Actor</th><th class="tbl-th">Module</th><th class="tbl-th">Record</th><th class="tbl-th">Action</th><th class="tbl-th">Details</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="6" class="tbl-td muted">No audit records match your filters.</td></tr>') +
+    '</tbody></table>' + renderPaginationBar(pg, 'audit', [10, 25, 50, 100]) + '</div>';
+
+    document.getElementById('view-root').innerHTML = html;
+
+    function applyAuditFilters() {
+      state.auditFilters.search = document.getElementById('aud-f-search').value;
+      state.auditFilters.module = document.getElementById('aud-f-mod').value;
+      state.auditFilters.page = 1;
+      loadAuditView();
+    }
+    document.getElementById('aud-f-apply').addEventListener('click', applyAuditFilters);
+    document.getElementById('aud-f-mod').addEventListener('change', applyAuditFilters);
+    document.getElementById('aud-f-search').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') applyAuditFilters();
+    });
+    bindPaginationBar('audit', pg, function(nextPage) {
+      state.auditFilters.page = nextPage;
+      loadAuditView();
+    }, function(nextSize) {
+      state.auditFilters.pageSize = nextSize;
+      state.auditFilters.page = 1;
+      loadAuditView();
+    });
+  }
+
+  // ==================== DRAWER & MODAL HELPERS ====================
+  function openDrawer(bodyHtml, footHtml) {
+    document.getElementById('drawer-body').innerHTML = bodyHtml;
+    document.getElementById('drawer-foot').innerHTML = footHtml;
+    document.getElementById('drawer-backdrop').classList.remove('hidden');
+    var cancelBtn = document.getElementById('drawer-cancel-btn');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeDrawer);
+  }
+  function closeDrawer() {
+    document.getElementById('drawer-backdrop').classList.add('hidden');
+  }
+  function openModal(html) {
+    document.getElementById('modal-card').innerHTML = html;
+    document.getElementById('modal-backdrop').classList.remove('hidden');
+    var closeBtn = document.getElementById('modal-close-btn');
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+  }
+  function closeModal() {
+    document.getElementById('modal-backdrop').classList.add('hidden');
+  }
+
+  function openPasswordModal(forced) {
+    var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><h3 style="margin:0;">' + (forced ? 'Change Initial Password Required' : 'Change Password') + '</h3>' +
+      (forced ? '' : '<button type="button" class="btn btn-sm" id="modal-close-btn">Close</button>') + '</div>' +
+      '<form id="pwd-modal-form">' +
+      '<div class="form-group"><label class="form-label">Current Password</label><input name="curr" type="password" class="form-input" required /></div>' +
+      '<div class="form-group"><label class="form-label">New Password (min 8 chars)</label><input name="next" type="password" class="form-input" minlength="8" required /></div>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Update Password</button></form>';
+    openModal(html);
+    document.getElementById('pwd-modal-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var f = e.target;
+      callApi('apiChangePassword', state.token, f.curr.value, f.next.value).then(function(res) {
+        state.user = res.user;
+        closeModal();
+        toast('Password updated successfully.', 'ok');
+      }).catch(function(err) { toast(err.message, 'error'); });
+    });
+  }
+
+  // ==================== EVENT LISTENERS ====================
+  document.getElementById('login-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var btn = document.getElementById('login-submit-btn');
+    var errEl = document.getElementById('login-error');
+    errEl.classList.add('hidden');
+    setBtnLoading(btn, true, 'Signing In...', 'Sign In');
+    var u = document.getElementById('login-username').value;
+    var p = document.getElementById('login-password').value;
+    callApi('apiLogin', u, p).then(function(res) {
+      state.token = res.token;
+      sessionStorage.setItem(TOKEN_KEY, res.token);
+      state.user = res.user;
+      state.permissions = res.permissions;
+      state.masters = res.masters || { items: [], grouped: {} };
+      state.rawSheets = res.rawSheets || [];
+      invalidateClientCache();
+      setBtnLoading(btn, false, 'Signing In...', 'Sign In');
+      initStaticIcons();
+      showApp();
+      if (state.user.must_change_password) {
+        openPasswordModal(true);
+      }
+    }).catch(function(err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+      setBtnLoading(btn, false, 'Signing In...', 'Sign In');
+    });
+  });
+
+  document.getElementById('btn-logout').addEventListener('click', function() {
+    var tok = state.token;
+    state.token = '';
+    sessionStorage.removeItem(TOKEN_KEY);
+    invalidateClientCache();
+    callApi('apiLogout', tok).catch(function() {});
+    showLogin();
+  });
+
+  document.getElementById('btn-open-pwd').addEventListener('click', function() { openPasswordModal(false); });
+  document.getElementById('btn-refresh').addEventListener('click', function() {
+    invalidateClientCache();
+    if (state.activeView === 'dashboard') loadDashboard(true);
+    else if (state.activeView === 'sss') loadSss(true);
+    else if (state.activeView === 'insurance') loadInsurance(true);
+    else if (state.activeView === 'admin') loadAdminView(true);
+    else if (state.activeView === 'audit') loadAuditView(true);
+    else navigate(state.activeView);
+  });
+  document.getElementById('drawer-close-btn').addEventListener('click', closeDrawer);
+
+  bootstrap();
+})();
+</script>

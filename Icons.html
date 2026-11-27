@@ -1,0 +1,31 @@
+<script>
+(function(global) {
+  var ICON_PATHS = {
+    dashboard: '<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>',
+    clipboard: '<rect x="5" y="4" width="14" height="17"/><path d="M9 4V2h6v2"/><path d="M9 10h6"/><path d="M9 14h6"/>',
+    shield: '<path d="M12 3l8 3v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3z"/><path d="M9 12l2 2 4-4"/>',
+    users: '<rect x="3" y="14" width="10" height="6"/><rect x="5.5" y="5" width="5" height="5"/><path d="M16 14h5v6h-4"/><path d="M16 5h4v5h-4"/>',
+    upload: '<path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 20h16"/>',
+    settings: '<rect x="9" y="9" width="6" height="6"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
+    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    logout: '<path d="M9 21H4V3h5"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
+    login: '<path d="M15 3h5v18h-5"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/>',
+    alert: '<path d="M12 3L2 20h20L12 3z"/><path d="M12 9v5"/><path d="M12 17h.01"/>',
+    download: '<path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/>',
+    printer: '<path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8"/><rect x="6" y="14" width="12" height="7"/>',
+    lock: '<rect x="4" y="11" width="16" height="10"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    check: '<path d="M5 12l5 5L20 7"/>',
+    trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><rect x="6" y="7" width="12" height="14"/>'
+  };
+
+  global.renderIcon = function(name, size) {
+    var path = ICON_PATHS[name] || '';
+    if (!path) return '';
+    var sz = size === 'sm' ? '14' : (size === 'lg' ? '20' : '16');
+    return '<svg class="icon icon-' + name + '" width="' + sz + '" height="' + sz +
+      '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"' +
+      ' stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">' + path + '</svg>';
+  };
+})(window);
+</script>

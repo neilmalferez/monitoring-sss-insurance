@@ -1,0 +1,7 @@
+blade-debug-classes/**
+implementation-planner/**
+minimal-svg-icons/**
+tests/**
+*.md
+.git/**
+.agents/**
