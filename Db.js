@@ -4,7 +4,7 @@
  */
 
 var EXEC_SS_CACHE_ = null;
-var DB_READY_CACHE_KEY_ = 'db_ready:v3';
+var DB_READY_CACHE_KEY_ = 'db_ready:v6';
 var SHEET_CACHE_TTL_SEC_ = 300;
 var SHEET_CACHE_CHUNK_CHARS_ = 80000;
 var SHEET_CACHE_MAX_CHUNKS_ = 10;
@@ -59,6 +59,7 @@ function onOpen() {
       .createMenu('SSS & Insurance System')
       .addItem('Initialize / Verify Database (DB_* tabs)', 'setupDatabase')
       .addItem('Seed Default Department Users', 'seedDefaultDepartmentUsers')
+      .addItem('Authorize Google Drive Attachments', 'authorizeDrive')
       .addItem('Recompute Workflow Stages', 'recomputeAllWorkflowStages')
       .addToUi();
   } catch (e) {
@@ -524,4 +525,28 @@ function recomputeAllWorkflowStages() {
     }
     return { sssUpdated: sssCount, insuranceUpdated: insCount };
   });
+}
+
+function getOrCreateAttachmentsFolder_() {
+  var folderName = 'SSS_Insurance_Attachments';
+  var props = PropertiesService.getScriptProperties();
+  var cachedId = props.getProperty('ATTACHMENTS_FOLDER_ID');
+  if (cachedId) {
+    try {
+      var existing = DriveApp.getFolderById(cachedId);
+      if (existing && !existing.isTrashed()) return existing;
+    } catch (e) {}
+  }
+  var iter = DriveApp.getFoldersByName(folderName);
+  var folder = iter.hasNext() ? iter.next() : DriveApp.createFolder(folderName);
+  props.setProperty('ATTACHMENTS_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+/**
+ * Run once in the Apps Script editor to authorize Google Drive access for file attachments.
+ */
+function authorizeDrive() {
+  var folder = getOrCreateAttachmentsFolder_();
+  return { ok: true, folderName: folder.getName(), folderId: folder.getId() };
 }

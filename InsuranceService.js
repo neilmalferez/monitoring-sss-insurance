@@ -43,7 +43,8 @@ function listInsuranceClaims_(session, filters) {
     if (q) {
       var hay = [
         clean.id, clean.seq_no, clean.employee_name, clean.insurance_ref_no,
-        clean.client_assigned, clean.hr_remarks, clean.disallowance_reason, clean.check_no
+        clean.client_assigned, clean.hr_remarks, clean.disallowance_reason,
+        clean.bank_reference_no, clean.check_no, clean.voucher_no
       ].join(' ').toLowerCase();
       if (hay.indexOf(q) === -1) continue;
     }
@@ -115,7 +116,15 @@ function sanitizeInsuranceRow_(r) {
     created_by: String(r.created_by || ''),
     created_at: String(r.created_at || ''),
     updated_by: String(r.updated_by || ''),
-    updated_at: String(r.updated_at || '')
+    updated_at: String(r.updated_at || ''),
+    attachment_name: String(r.attachment_name || ''),
+    attachment_url: String(r.attachment_url || ''),
+    reimbursement_attachment_name: String(r.reimbursement_attachment_name || ''),
+    reimbursement_attachment_url: String(r.reimbursement_attachment_url || ''),
+    bank_reference_no: String(r.bank_reference_no || ''),
+    bank_attachment_name: String(r.bank_attachment_name || ''),
+    bank_attachment_url: String(r.bank_attachment_url || ''),
+    voucher_no: String(r.voucher_no || '')
   };
 }
 
@@ -127,8 +136,16 @@ function normalizeInsuranceFields_(rec) {
   if (out.client_assigned !== undefined) out.client_assigned = normalizeClient_(out.client_assigned);
   if (out.insurance_ref_no !== undefined) out.insurance_ref_no = String(out.insurance_ref_no || '').trim().toUpperCase();
   if (out.bank_status !== undefined) out.bank_status = normalizeBankStatus_(out.bank_status);
+  if (out.bank_reference_no !== undefined) out.bank_reference_no = String(out.bank_reference_no || '').trim();
   if (out.check_no !== undefined) out.check_no = String(out.check_no || '').trim();
+  if (out.voucher_no !== undefined) out.voucher_no = String(out.voucher_no || '').trim();
   if (out.final_status !== undefined) out.final_status = String(out.final_status || '').trim().toUpperCase();
+  if (out.attachment_name !== undefined) out.attachment_name = String(out.attachment_name || '').trim();
+  if (out.attachment_url !== undefined) out.attachment_url = String(out.attachment_url || '').trim();
+  if (out.reimbursement_attachment_name !== undefined) out.reimbursement_attachment_name = String(out.reimbursement_attachment_name || '').trim();
+  if (out.reimbursement_attachment_url !== undefined) out.reimbursement_attachment_url = String(out.reimbursement_attachment_url || '').trim();
+  if (out.bank_attachment_name !== undefined) out.bank_attachment_name = String(out.bank_attachment_name || '').trim();
+  if (out.bank_attachment_url !== undefined) out.bank_attachment_url = String(out.bank_attachment_url || '').trim();
   if (out.amount_released !== undefined && out.amount_released !== '') out.amount_released = parseMoney_(out.amount_released);
   if (out.amount_reimbursed !== undefined && out.amount_reimbursed !== '') out.amount_reimbursed = parseMoney_(out.amount_reimbursed);
   if (out.amount_credited !== undefined && out.amount_credited !== '') out.amount_credited = parseMoney_(out.amount_credited);
@@ -197,7 +214,15 @@ function saveInsuranceClaim_(session, payload) {
       created_at: now,
       updated_by: session.username,
       updated_at: now,
-      is_deleted: false
+      is_deleted: false,
+      attachment_name: '',
+      attachment_url: '',
+      reimbursement_attachment_name: '',
+      reimbursement_attachment_url: '',
+      bank_reference_no: '',
+      bank_attachment_name: '',
+      bank_attachment_url: '',
+      voucher_no: ''
     };
 
     var normPatch = normalizeInsuranceFields_(filtered);
@@ -279,4 +304,78 @@ function deleteInsuranceClaim_(session, id) {
     writeAuditLog_(session, 'INSURANCE', id, 'DELETE', { is_deleted: { from: 'false', to: 'true' } }, 'Soft-deleted Insurance claim ' + target.employee_name);
     return { deleted: true, id: id };
   });
+}
+
+function uploadInsuranceAttachment_(session, payload) {
+  payload = payload || {};
+  var rawKind = String(payload.attachmentKind || '').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  if (rawKind === 'BANK') {
+    if (session.role !== APP_CONFIG.ROLES.ADMIN &&
+        session.role !== APP_CONFIG.ROLES.BANK_ACCOUNTING &&
+        session.role !== APP_CONFIG.ROLES.ACCOUNTING) {
+      throw new Error('Only Bank Accounting, Accounting, or System Admin can upload bank attachments.');
+    }
+  } else {
+    if (session.role !== APP_CONFIG.ROLES.ADMIN && session.role !== APP_CONFIG.ROLES.HR) {
+      throw new Error('Only HR Department or System Admin can upload HR insurance attachments.');
+    }
+  }
+  var fileName = String(payload.fileName || 'attachment').trim().replace(/[\\/:*?"<>|]/g, '_');
+  var mimeType = String(payload.mimeType || 'application/octet-stream').trim();
+  var base64Data = String(payload.base64Data || '').trim();
+  var claimId = String(payload.claimId || 'NEW').trim();
+
+  if (!base64Data) {
+    throw new Error('Attachment file data is empty.');
+  }
+  if (base64Data.length > 14000000) {
+    throw new Error('File is too large. Please keep attachments under 10 MB.');
+  }
+  var allowedMimes = [
+    'application/pdf',
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  ];
+  if (allowedMimes.indexOf(mimeType.toLowerCase()) === -1) {
+    throw new Error('Unsupported file type (' + mimeType + '). Allowed: PDF, JPG, PNG, WebP, Word, Excel.');
+  }
+
+  try {
+    var folder = getOrCreateAttachmentsFolder_();
+    var bytes = Utilities.base64Decode(base64Data);
+    var safePrefix = (claimId ? claimId + '_' : '') + (rawKind ? rawKind + '_' : '');
+    var safeName = safePrefix + fileName;
+    var blob = Utilities.newBlob(bytes, mimeType, safeName);
+    var file = folder.createFile(blob);
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (shareErr) {
+      // Domain policy may restrict ANYONE_WITH_LINK; file remains accessible via Google Drive URL
+    }
+    var url = file.getUrl();
+    writeAuditLog_(
+      session,
+      'INSURANCE',
+      claimId || 'NEW',
+      'UPLOAD_ATTACHMENT',
+      { attachment_kind: rawKind || 'GENERAL', attachment_name: fileName, attachment_url: url },
+      'Uploaded insurance attachment (' + (rawKind || 'GENERAL') + '): ' + fileName
+    );
+    return {
+      attachment_name: fileName,
+      attachment_url: url
+    };
+  } catch (err) {
+    var msg = (err && err.message) ? err.message : String(err);
+    if (/permission|DriveApp|authoriz|scope/i.test(msg)) {
+      throw new Error('Google Drive is not authorized yet. Run authorizeDrive() once in the Apps Script editor.');
+    }
+    throw new Error('Attachment upload failed: ' + msg);
+  }
 }

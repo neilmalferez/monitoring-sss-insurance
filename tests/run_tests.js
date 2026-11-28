@@ -136,7 +136,24 @@ function createGasMocks() {
         const buf = crypto.createHash('sha256').update(String(str), 'utf8').digest();
         return Array.from(buf).map(b => (b > 127 ? b - 256 : b));
       },
-      formatDate: (d, tz, fmt) => formatWithTz(d, tz, fmt)
+      formatDate: (d, tz, fmt) => formatWithTz(d, tz, fmt),
+      base64Decode: (b64) => Buffer.from(String(b64), 'base64'),
+      newBlob: (bytes, mime, name) => ({ bytes, mime, name })
+    },
+    DriveApp: {
+      Access: { ANYONE_WITH_LINK: 'ANYONE_WITH_LINK' },
+      Permission: { VIEW: 'VIEW' },
+      getFolderById: () => null,
+      getFoldersByName: () => ({ hasNext: () => false }),
+      createFolder: (name) => ({
+        getId: () => 'MOCK_FOLDER_ID',
+        getName: () => name,
+        isTrashed: () => false,
+        createFile: (blob) => ({
+          setSharing: () => {},
+          getUrl: () => 'https://drive.google.com/file/d/MOCK_FILE_' + encodeURIComponent(blob.name) + '/view'
+        })
+      })
     },
     HtmlService: {
       createTemplateFromFile: () => ({ evaluate: () => ({ setTitle: function() { return this; }, addMetaTag: function() { return this; } }) }),
@@ -618,18 +635,164 @@ function runTests() {
   assert.strictEqual(acctgUpdateOk.data.record.check_no, '2000009999');
   assert.strictEqual(acctgUpdateOk.data.record.workflow_stage, 'COMPLETED');
 
-  // ACCOUNTING can update Bank & Closure on Insurance
+  // ACCOUNTING can update Bank & Closure on Insurance (and cannot overwrite attachment fields)
   const acctgInsUpdate = gas.apiSaveInsurance(acctgToken, {
     id: insPage1.data.items[0].id,
     bank_status: 'CREDITED TO METROBANK',
     date_credited: '2026-07-08',
     amount_credited: insPage1.data.items[0].amount_released,
-    final_status: 'DONE'
+    bank_reference_no: 'BREF-ACCT-001',
+    voucher_no: 'VCH-ACCT-001',
+    final_status: 'DONE',
+    attachment_url: 'https://evil.example.com',
+    reimbursement_attachment_url: 'https://evil.example.com/reimb'
   });
   assert.strictEqual(acctgInsUpdate.ok, true, acctgInsUpdate.error);
+  assert.strictEqual(acctgInsUpdate.data.record.bank_reference_no, 'BREF-ACCT-001');
+  assert.strictEqual(acctgInsUpdate.data.record.voucher_no, 'VCH-ACCT-001');
+  assert.notStrictEqual(acctgInsUpdate.data.record.attachment_url, 'https://evil.example.com');
+  assert.notStrictEqual(acctgInsUpdate.data.record.reimbursement_attachment_url, 'https://evil.example.com/reimb');
 
-  assertNoRawDates([myProf, profUpdate, photoSave, bootAfterPhoto, photoRemove, allUsersList, acctgLogin, acctgUpdateOk, acctgInsUpdate]);
-  console.log('PASS: Profile APIs, photo upload, schema migration, seeded accounts & combined ACCOUNTING role');
+  // 11. Insurance Attachment Uploads (Submission & Reimbursement), Bank Ref, Voucher & Schema Migration
+  const attUpload = gas.apiUploadInsuranceAttachment(hrToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'SUBMISSION',
+    fileName: 'medical_receipt.pdf',
+    mimeType: 'application/pdf',
+    base64Data: Buffer.from('%PDF-1.4 mock').toString('base64')
+  });
+  assert.strictEqual(attUpload.ok, true, attUpload.error);
+  assert.strictEqual(attUpload.data.attachment_name, 'medical_receipt.pdf');
+  assert.ok(attUpload.data.attachment_url.includes('https://drive.google.com/file/d/MOCK_FILE_'));
+
+  const reimbAttUpload = gas.apiUploadInsuranceAttachment(hrToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'REIMBURSEMENT',
+    fileName: 'reimbursement_slip.png',
+    mimeType: 'image/png',
+    base64Data: Buffer.from('PNG_MOCK').toString('base64')
+  });
+  assert.strictEqual(reimbAttUpload.ok, true, reimbAttUpload.error);
+  assert.strictEqual(reimbAttUpload.data.attachment_name, 'reimbursement_slip.png');
+  assert.ok(reimbAttUpload.data.attachment_url.includes('MOCK_FILE_'));
+
+  const badAttType = gas.apiUploadInsuranceAttachment(hrToken, {
+    claimId: insPage1.data.items[0].id,
+    fileName: 'script.exe',
+    mimeType: 'application/x-msdownload',
+    base64Data: 'AAAA'
+  });
+  assert.strictEqual(badAttType.ok, false);
+
+  // HR saves both attachments, and cannot overwrite bank_reference_no, bank_attachment_url, or voucher_no
+  const hrAttSave = gas.apiSaveInsurance(hrToken, {
+    id: insPage1.data.items[0].id,
+    attachment_name: attUpload.data.attachment_name,
+    attachment_url: attUpload.data.attachment_url,
+    reimbursement_attachment_name: reimbAttUpload.data.attachment_name,
+    reimbursement_attachment_url: reimbAttUpload.data.attachment_url,
+    bank_reference_no: 'HR_TAMPER',
+    bank_attachment_url: 'https://evil.example.com/bank',
+    voucher_no: 'HR_TAMPER'
+  });
+  assert.strictEqual(hrAttSave.ok, true, hrAttSave.error);
+  assert.strictEqual(hrAttSave.data.record.attachment_url, attUpload.data.attachment_url);
+  assert.strictEqual(hrAttSave.data.record.reimbursement_attachment_url, reimbAttUpload.data.attachment_url);
+  assert.strictEqual(hrAttSave.data.record.bank_reference_no, 'BREF-ACCT-001');
+  assert.strictEqual(hrAttSave.data.record.bank_attachment_url, '');
+  assert.strictEqual(hrAttSave.data.record.voucher_no, 'VCH-ACCT-001');
+
+  // Section 2 Bank Attachment upload RBAC & save
+  const hrBankAttFail = gas.apiUploadInsuranceAttachment(hrToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'BANK',
+    fileName: 'bank_slip.pdf',
+    mimeType: 'application/pdf',
+    base64Data: Buffer.from('%PDF-1.4 bank').toString('base64')
+  });
+  assert.strictEqual(hrBankAttFail.ok, false);
+
+  const bankSubAttFail = gas.apiUploadInsuranceAttachment(bankToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'SUBMISSION',
+    fileName: 'sub_slip.pdf',
+    mimeType: 'application/pdf',
+    base64Data: Buffer.from('%PDF-1.4 sub').toString('base64')
+  });
+  assert.strictEqual(bankSubAttFail.ok, false);
+
+  const checkBankAttFail = gas.apiUploadInsuranceAttachment(checkToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'BANK',
+    fileName: 'bank_slip.pdf',
+    mimeType: 'application/pdf',
+    base64Data: Buffer.from('%PDF-1.4 bank').toString('base64')
+  });
+  assert.strictEqual(checkBankAttFail.ok, false);
+
+  const bankAttUpload = gas.apiUploadInsuranceAttachment(bankToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'BANK',
+    fileName: 'bank_credit_advice.pdf',
+    mimeType: 'application/pdf',
+    base64Data: Buffer.from('%PDF-1.4 bank credit').toString('base64')
+  });
+  assert.strictEqual(bankAttUpload.ok, true, bankAttUpload.error);
+  assert.strictEqual(bankAttUpload.data.attachment_name, 'bank_credit_advice.pdf');
+  assert.ok(bankAttUpload.data.attachment_url.includes('MOCK_FILE_'));
+
+  const acctgBankAttUpload = gas.apiUploadInsuranceAttachment(acctgToken, {
+    claimId: insPage1.data.items[0].id,
+    attachmentKind: 'BANK',
+    fileName: 'acctg_bank_slip.png',
+    mimeType: 'image/png',
+    base64Data: Buffer.from('PNG_BANK').toString('base64')
+  });
+  assert.strictEqual(acctgBankAttUpload.ok, true, acctgBankAttUpload.error);
+
+  // BANK_ACCOUNTING saves bank_reference_no & bank_attachment, cannot overwrite voucher_no
+  const bankRefSave = gas.apiSaveInsurance(bankToken, {
+    id: insPage1.data.items[0].id,
+    bank_reference_no: 'MB-2026-8899',
+    bank_attachment_name: bankAttUpload.data.attachment_name,
+    bank_attachment_url: bankAttUpload.data.attachment_url,
+    voucher_no: 'BANK_TAMPER'
+  });
+  assert.strictEqual(bankRefSave.ok, true, bankRefSave.error);
+  assert.strictEqual(bankRefSave.data.record.bank_reference_no, 'MB-2026-8899');
+  assert.strictEqual(bankRefSave.data.record.bank_attachment_name, 'bank_credit_advice.pdf');
+  assert.strictEqual(bankRefSave.data.record.bank_attachment_url, bankAttUpload.data.attachment_url);
+  assert.strictEqual(bankRefSave.data.record.voucher_no, 'VCH-ACCT-001');
+
+  // CHECK_ISSUANCE saves voucher_no, cannot overwrite bank_reference_no or bank_attachment_url
+  const checkVoucherSave = gas.apiSaveInsurance(checkToken, {
+    id: insPage1.data.items[0].id,
+    voucher_no: 'CV-2026-4411',
+    bank_reference_no: 'CHECK_TAMPER',
+    bank_attachment_url: 'https://evil.example.com/check_tamper'
+  });
+  assert.strictEqual(checkVoucherSave.ok, true, checkVoucherSave.error);
+  assert.strictEqual(checkVoucherSave.data.record.voucher_no, 'CV-2026-4411');
+  assert.strictEqual(checkVoucherSave.data.record.bank_reference_no, 'MB-2026-8899');
+  assert.strictEqual(checkVoucherSave.data.record.bank_attachment_url, bankAttUpload.data.attachment_url);
+
+  // Schema migration test for DB_Insurance_Claims missing all 8 attachment/ref/voucher columns
+  const insSheet = mockSpreadsheet.getSheetByName('DB_Insurance_Claims');
+  const migratedCols = [
+    'attachment_name', 'attachment_url',
+    'reimbursement_attachment_name', 'reimbursement_attachment_url',
+    'bank_reference_no', 'bank_attachment_name', 'bank_attachment_url',
+    'voucher_no'
+  ];
+  insSheet.data[0] = insSheet.data[0].filter(c => !migratedCols.includes(c));
+  gas.CacheService.getScriptCache().remove(gas.DB_READY_CACHE_KEY_);
+  gas.ensureDatabaseReady_();
+  for (const col of migratedCols) {
+    assert.ok(insSheet.data[0].includes(col), `ensureDatabaseReady_ must append missing ${col} column`);
+  }
+
+  assertNoRawDates([myProf, profUpdate, photoSave, bootAfterPhoto, photoRemove, allUsersList, acctgLogin, acctgUpdateOk, acctgInsUpdate, attUpload, reimbAttUpload, bankAttUpload, acctgBankAttUpload, hrAttSave, bankRefSave, checkVoucherSave]);
+  console.log('PASS: Profile APIs, photo upload, schema migration, seeded accounts, combined ACCOUNTING role & Insurance attachments/ref/voucher');
   console.log('\nALL TESTS PASSED!');
 }
 

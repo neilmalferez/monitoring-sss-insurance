@@ -974,14 +974,33 @@
       expense_bearer: 'COMPANY EXPENSE', client_assigned: 'VMC', insurance_ref_no: '',
       amount_released: '', date_of_submission: new Date().toISOString().slice(0, 10),
       reimbursed_date: '', amount_reimbursed: '', disallowance_reason: '', hr_remarks: '',
-      bank_status: 'PENDING', date_credited: '', amount_credited: '', bank_notes: '',
-      check_required: false, date_of_check: '', check_amount: '', check_no: '',
-      final_status: '', check_notes: ''
+      bank_status: 'PENDING', date_credited: '', amount_credited: '', bank_reference_no: '', bank_notes: '',
+      bank_attachment_name: '', bank_attachment_url: '',
+      check_required: false, date_of_check: '', check_amount: '', check_no: '', voucher_no: '',
+      final_status: '', check_notes: '', attachment_name: '', attachment_url: '',
+      reimbursement_attachment_name: '', reimbursement_attachment_url: ''
     };
 
     var hrEditable = canEditField('INSURANCE', 'employee_name');
     var bankEditable = canEditField('INSURANCE', 'date_credited');
     var checkEditable = canEditField('INSURANCE', 'final_status');
+
+    function renderUploadOnlyAttachment(prefix, label, nameField, urlField, nameVal, urlVal, editable) {
+      var hasFile = Boolean(String(urlVal || '').trim());
+      var displayText = nameVal ? String(nameVal) : (hasFile ? 'Attached file' : 'No file uploaded');
+      return '<div class="form-group">' +
+        '<label class="form-label">' + esc(label) + '</label>' +
+        '<div class="attachment-box">' +
+          '<input name="' + esc(nameField) + '" type="hidden" value="' + esc(nameVal || '') + '" ' + (!editable ? 'disabled' : '') + '/>' +
+          '<input name="' + esc(urlField) + '" type="hidden" value="' + esc(urlVal || '') + '" ' + (!editable ? 'disabled' : '') + '/>' +
+          '<span id="' + esc(prefix) + '-file-badge" class="attachment-file-badge ' + (hasFile ? '' : 'is-empty') + '" title="' + esc(displayText) + '">' + esc(displayText) + '</span>' +
+          '<input id="' + esc(prefix) + '-file-input" type="file" accept=".pdf,image/*,.doc,.docx,.xls,.xlsx" class="hidden" />' +
+          (editable ? '<button id="' + esc(prefix) + '-upload-btn" type="button" class="btn btn-sm">' + renderIcon('upload', 'sm') + '<span data-btn-label>' + (hasFile ? 'Replace File' : 'Upload File') + '</span></button>' : '') +
+          '<a id="' + esc(prefix) + '-open-link" class="btn btn-primary btn-sm ' + (hasFile ? '' : 'hidden') + '" href="' + esc(urlVal || '#') + '" target="_blank" rel="noopener noreferrer">Open File</a>' +
+          (editable ? '<button id="' + esc(prefix) + '-remove-btn" type="button" class="btn btn-sm ' + (hasFile ? '' : 'hidden') + '">Remove</button>' : '') +
+        '</div>' +
+      '</div>';
+    }
 
     document.getElementById('drawer-kicker').textContent = isCreate ? 'New Insurance Claim' : ('Insurance ' + r.id + ' (#' + r.seq_no + ')');
     document.getElementById('drawer-title').textContent = isCreate ? 'File New Insurance / Accident Claim' : r.employee_name;
@@ -991,6 +1010,7 @@
       '<div class="section-card sec-hr ' + (!hrEditable ? 'is-locked' : '') + '">' +
         '<div class="section-card-head"><span>1. HR Department (Accident &amp; Insurance Submission)</span><span>' + (hrEditable ? 'Editable' : 'Locked') + '</span></div>' +
         '<div class="section-card-body">' +
+          '<div class="form-subhead">Incident &amp; Employee Details</div>' +
           '<div class="form-grid-3">' +
             '<div class="form-group" style="grid-column:span 2;"><label class="form-label">Employee Name</label><input name="employee_name" class="form-input" value="' + esc(r.employee_name) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
             '<div class="form-group"><label class="form-label">Client Assigned</label><select name="client_assigned" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('CLIENT', r.client_assigned, '') + '</select></div>' +
@@ -1000,18 +1020,26 @@
             '<div class="form-group"><label class="form-label">Accident Type</label><select name="accident_type" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('ACCIDENT_TYPE', r.accident_type) + '</select></div>' +
             '<div class="form-group"><label class="form-label">Expense Bearer</label><select name="expense_bearer" class="form-select" ' + (!hrEditable ? 'disabled' : '') + '>' + masterOptions('EXPENSE_BEARER', r.expense_bearer) + '</select></div>' +
           '</div>' +
-          '<div class="form-grid-3">' +
-            '<div class="form-group"><label class="form-label">Insurance Ref (SIIP-ANHDA-...)</label><input name="insurance_ref_no" class="form-input mono" value="' + esc(r.insurance_ref_no) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
-            '<div class="form-group"><label class="form-label">Date of Submission</label><input name="date_of_submission" type="date" class="form-input" value="' + esc(r.date_of_submission) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
-            '<div class="form-group"><label class="form-label">Amount Released (PHP)</label><input name="amount_released" type="number" step="0.01" min="0" class="form-input" value="' + esc(r.amount_released) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+          '<div class="form-divider">' +
+            '<div class="form-subhead">Submission &amp; Attachment</div>' +
+            '<div class="form-grid-2">' +
+              '<div class="form-group"><label class="form-label">Date of Submission</label><input name="date_of_submission" type="date" class="form-input" value="' + esc(r.date_of_submission) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+              '<div class="form-group"><label class="form-label">Amount Released (PHP)</label><input name="amount_released" type="number" step="0.01" min="0" class="form-input" value="' + esc(r.amount_released) + '" ' + (!hrEditable ? 'disabled' : 'required') + '/></div>' +
+            '</div>' +
+            renderUploadOnlyAttachment('ins-att', 'Attachment', 'attachment_name', 'attachment_url', r.attachment_name, r.attachment_url, hrEditable) +
           '</div>' +
-          '<div class="form-grid-2">' +
-            '<div class="form-group"><label class="form-label">Reimbursed Date</label><input name="reimbursed_date" type="date" class="form-input" value="' + esc(r.reimbursed_date) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
-            '<div class="form-group"><label class="form-label">Amount Reimbursed (PHP)</label><input name="amount_reimbursed" type="number" step="0.01" class="form-input" value="' + esc(r.amount_reimbursed) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
-          '</div>' +
-          '<div class="form-grid-2">' +
-            '<div class="form-group"><label class="form-label">Disallowance Reason</label><input name="disallowance_reason" class="form-input" value="' + esc(r.disallowance_reason) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
-            '<div class="form-group"><label class="form-label">HR Remarks</label><input name="hr_remarks" class="form-input" value="' + esc(r.hr_remarks) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+          '<div class="form-divider">' +
+            '<div class="form-subhead">Insurance Reference &amp; Reimbursement</div>' +
+            '<div class="form-grid-3">' +
+              '<div class="form-group"><label class="form-label">Insurance Ref (SIIP-ANHDA-...)</label><input name="insurance_ref_no" class="form-input mono" value="' + esc(r.insurance_ref_no) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+              '<div class="form-group"><label class="form-label">Reimbursed Date</label><input name="reimbursed_date" type="date" class="form-input" value="' + esc(r.reimbursed_date) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+              '<div class="form-group"><label class="form-label">Amount Reimbursed (PHP)</label><input name="amount_reimbursed" type="number" step="0.01" class="form-input" value="' + esc(r.amount_reimbursed) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '</div>' +
+            '<div class="form-grid-2">' +
+              '<div class="form-group"><label class="form-label">Disallowance Reason</label><input name="disallowance_reason" class="form-input" value="' + esc(r.disallowance_reason) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+              '<div class="form-group"><label class="form-label">HR Remarks</label><input name="hr_remarks" class="form-input" value="' + esc(r.hr_remarks) + '" ' + (!hrEditable ? 'disabled' : '') + '/></div>' +
+            '</div>' +
+            renderUploadOnlyAttachment('ins-reimb-att', 'Reimbursement Attachment', 'reimbursement_attachment_name', 'reimbursement_attachment_url', r.reimbursement_attachment_name, r.reimbursement_attachment_url, hrEditable) +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -1025,7 +1053,11 @@
             '<div class="form-group"><label class="form-label">Date Credited</label><input name="date_credited" type="date" class="form-input" value="' + esc(r.date_credited) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
             '<div class="form-group"><label class="form-label">Amount Credited (PHP)</label><input name="amount_credited" type="number" step="0.01" class="form-input" value="' + esc(r.amount_credited) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
           '</div>' +
-          '<div class="form-group"><label class="form-label">Bank Notes</label><input name="bank_notes" class="form-input" value="' + esc(r.bank_notes) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+          '<div class="form-grid-3">' +
+            '<div class="form-group"><label class="form-label">Bank Reference #</label><input name="bank_reference_no" class="form-input mono" value="' + esc(r.bank_reference_no) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group" style="grid-column:span 2;"><label class="form-label">Bank Notes</label><input name="bank_notes" class="form-input" value="' + esc(r.bank_notes) + '" ' + (!bankEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          renderUploadOnlyAttachment('ins-bank-att', 'Bank Attachment', 'bank_attachment_name', 'bank_attachment_url', r.bank_attachment_name, r.bank_attachment_url, bankEditable) +
         '</div>' +
       '</div>' +
 
@@ -1036,10 +1068,13 @@
             '<div class="form-group"><label class="form-label"><input name="check_required" type="checkbox" ' + (r.check_required ? 'checked' : '') + ' ' + (!checkEditable ? 'disabled' : '') + '/> Check Required (unchecked = N/A for Company Expense)</label></div>' +
             '<div class="form-group"><label class="form-label">Final Status</label><select name="final_status" class="form-select" ' + (!checkEditable ? 'disabled' : '') + '><option value="">Open</option><option value="DONE"' + (r.final_status === 'DONE' ? ' selected' : '') + '>DONE</option></select></div>' +
           '</div>' +
-          '<div class="form-grid-3">' +
+          '<div class="form-grid-2">' +
             '<div class="form-group"><label class="form-label">Date of Check</label><input name="date_of_check" type="date" class="form-input" value="' + esc(r.date_of_check) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
             '<div class="form-group"><label class="form-label">Check Amount (PHP)</label><input name="check_amount" type="number" step="0.01" class="form-input" value="' + esc(r.check_amount) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+          '</div>' +
+          '<div class="form-grid-2">' +
             '<div class="form-group"><label class="form-label">Check #</label><input name="check_no" class="form-input mono" value="' + esc(r.check_no) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
+            '<div class="form-group"><label class="form-label">Voucher #</label><input name="voucher_no" class="form-input mono" value="' + esc(r.voucher_no) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
           '</div>' +
           '<div class="form-group"><label class="form-label">Check / Closure Notes</label><input name="check_notes" class="form-input" value="' + esc(r.check_notes) + '" ' + (!checkEditable ? 'disabled' : '') + '/></div>' +
         '</div>' +
@@ -1070,10 +1105,12 @@
         form.date_of_check.disabled = true;
         form.check_amount.disabled = true;
         form.check_no.disabled = true;
+        form.voucher_no.disabled = true;
       } else if (checkEditable) {
         form.date_of_check.disabled = false;
         form.check_amount.disabled = false;
         form.check_no.disabled = false;
+        form.voucher_no.disabled = false;
       }
       var rel = Number(form.amount_released.value) || 0;
       var reimb = form.amount_reimbursed.value !== '' ? Number(form.amount_reimbursed.value) : 0;
@@ -1090,11 +1127,102 @@
     form.addEventListener('input', syncCheckFields);
     form.addEventListener('change', syncCheckFields);
 
+    function bindUploadOnlyAttachment(prefix, nameField, urlField, attachmentKind) {
+      var uploadBtn = document.getElementById(prefix + '-upload-btn');
+      var fileInput = document.getElementById(prefix + '-file-input');
+      var removeBtn = document.getElementById(prefix + '-remove-btn');
+      var openEl = document.getElementById(prefix + '-open-link');
+      var badgeEl = document.getElementById(prefix + '-file-badge');
+
+      function syncUi() {
+        var urlVal = String(form[urlField].value || '').trim();
+        var nameVal = String(form[nameField].value || '').trim();
+        var hasFile = Boolean(urlVal);
+        var labelText = nameVal ? nameVal : (hasFile ? 'Attached file' : 'No file uploaded');
+        if (badgeEl) {
+          badgeEl.textContent = labelText;
+          badgeEl.title = labelText;
+          badgeEl.classList.toggle('is-empty', !hasFile);
+        }
+        if (openEl) {
+          openEl.href = urlVal || '#';
+          openEl.classList.toggle('hidden', !hasFile);
+        }
+        if (removeBtn) removeBtn.classList.toggle('hidden', !hasFile);
+        if (uploadBtn && !uploadBtn.disabled) {
+          var lblSpan = uploadBtn.querySelector('[data-btn-label]');
+          if (lblSpan) lblSpan.textContent = hasFile ? 'Replace File' : 'Upload File';
+        }
+      }
+
+      if (uploadBtn && fileInput) {
+        uploadBtn.addEventListener('click', function() { fileInput.click(); });
+        fileInput.addEventListener('change', function() {
+          var file = fileInput.files[0];
+          fileInput.value = '';
+          if (!file) return;
+          if (file.size > 10 * 1024 * 1024) {
+            toast('Attachment must be under 10 MB.', 'error');
+            return;
+          }
+          var idleLbl = String(form[urlField].value || '').trim() ? 'Replace File' : 'Upload File';
+          setBtnLoading(uploadBtn, true, 'Uploading...', idleLbl);
+          var reader = new FileReader();
+          reader.onerror = function() {
+            toast('Failed to read selected file.', 'error');
+            setBtnLoading(uploadBtn, false, 'Uploading...', idleLbl);
+          };
+          reader.onload = function() {
+            var dataUrl = String(reader.result || '');
+            var commaIdx = dataUrl.indexOf(',');
+            var base64Data = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : '';
+            callApi('apiUploadInsuranceAttachment', state.token, {
+              claimId: r.id || 'NEW',
+              attachmentKind: attachmentKind,
+              fileName: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              base64Data: base64Data
+            }).then(function(res) {
+              form[nameField].value = res.attachment_name || file.name;
+              form[urlField].value = res.attachment_url || '';
+              setBtnLoading(uploadBtn, false, 'Uploading...', 'Replace File');
+              syncUi();
+              toast('Attachment uploaded to Google Drive. Click Save Claim to link it.', 'ok');
+            }).catch(function(err) {
+              toast(err.message, 'error');
+              setBtnLoading(uploadBtn, false, 'Uploading...', idleLbl);
+            });
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+      if (removeBtn) {
+        removeBtn.addEventListener('click', function() {
+          form[nameField].value = '';
+          form[urlField].value = '';
+          syncUi();
+        });
+      }
+      syncUi();
+    }
+
+    bindUploadOnlyAttachment('ins-att', 'attachment_name', 'attachment_url', 'SUBMISSION');
+    bindUploadOnlyAttachment('ins-reimb-att', 'reimbursement_attachment_name', 'reimbursement_attachment_url', 'REIMBURSEMENT');
+    bindUploadOnlyAttachment('ins-bank-att', 'bank_attachment_name', 'bank_attachment_url', 'BANK');
+
     var saveBtn = document.getElementById('ins-save-btn');
     if (saveBtn) {
       saveBtn.addEventListener('click', function() {
         var payload = isCreate ? {} : { id: r.id };
-        var fields = ['employee_name', 'client_assigned', 'date_of_accident', 'accident_type', 'expense_bearer', 'insurance_ref_no', 'date_of_submission', 'amount_released', 'reimbursed_date', 'amount_reimbursed', 'disallowance_reason', 'hr_remarks', 'bank_status', 'date_credited', 'amount_credited', 'bank_notes', 'date_of_check', 'check_amount', 'check_no', 'final_status', 'check_notes'];
+        var fields = [
+          'employee_name', 'client_assigned', 'date_of_accident', 'accident_type', 'expense_bearer',
+          'insurance_ref_no', 'date_of_submission', 'amount_released', 'reimbursed_date', 'amount_reimbursed',
+          'disallowance_reason', 'hr_remarks', 'attachment_name', 'attachment_url',
+          'reimbursement_attachment_name', 'reimbursement_attachment_url',
+          'bank_status', 'date_credited', 'amount_credited', 'bank_reference_no',
+          'bank_attachment_name', 'bank_attachment_url', 'bank_notes',
+          'date_of_check', 'check_amount', 'check_no', 'voucher_no', 'final_status', 'check_notes'
+        ];
         fields.forEach(function(fn) {
           if (form[fn] && !form[fn].disabled) payload[fn] = form[fn].value;
         });

@@ -183,6 +183,18 @@ function apiDeleteInsurance(token, id) {
   });
 }
 
+function apiUploadInsuranceAttachment(token, payload) {
+  return apiWrap_(function() {
+    var sess = requireSession_(token, [
+      APP_CONFIG.ROLES.ADMIN,
+      APP_CONFIG.ROLES.HR,
+      APP_CONFIG.ROLES.BANK_ACCOUNTING,
+      APP_CONFIG.ROLES.ACCOUNTING
+    ]);
+    return uploadInsuranceAttachment_(sess, payload);
+  });
+}
+
 function apiEmployeeHistory(token, query) {
   return apiWrap_(function() {
     var sess = requireSession_(token);

@@ -580,8 +580,10 @@ function exportReportCsv_(session, opts) {
     'ID', 'No.', 'Employee Name', 'Date of Accident', 'Accident Type',
     'Expense Bearer', 'Client Assigned', 'Insurance Ref No.', 'Amount Released (PHP)',
     'Date of Submission', 'Reimbursed Date', 'Amount Reimbursed (PHP)', 'Balance / Variance',
-    'Disallowance / Remarks', 'Bank Status', 'Date Credited', 'Amount Credited (PHP)',
-    'Check Required', 'Date of Check', 'Check Amount (PHP)', 'Check #', 'Final Status', 'Workflow Stage'
+    'Disallowance / Remarks', 'Attachment URL', 'Reimbursement Attachment URL',
+    'Bank Status', 'Date Credited', 'Amount Credited (PHP)', 'Bank Reference #', 'Bank Attachment URL',
+    'Check Required', 'Date of Check', 'Check Amount (PHP)', 'Check #', 'Voucher #',
+    'Final Status', 'Workflow Stage'
   ];
   lines.push(insHeaders.map(csvEscape_).join(','));
   for (var j = 0; j < insRes.items.length; j++) {
@@ -590,8 +592,9 @@ function exportReportCsv_(session, opts) {
       ir.id, ir.seq_no, ir.employee_name, ir.date_of_accident, ir.accident_type,
       ir.expense_bearer, ir.client_assigned, ir.insurance_ref_no, ir.amount_released,
       ir.date_of_submission, ir.reimbursed_date, ir.amount_reimbursed, ir.balance_variance,
-      ir.disallowance_reason || ir.hr_remarks, ir.bank_status, ir.date_credited, ir.amount_credited,
-      ir.check_required ? 'YES' : 'N/A', ir.date_of_check, ir.check_amount, ir.check_no,
+      ir.disallowance_reason || ir.hr_remarks, ir.attachment_url, ir.reimbursement_attachment_url,
+      ir.bank_status, ir.date_credited, ir.amount_credited, ir.bank_reference_no, ir.bank_attachment_url,
+      ir.check_required ? 'YES' : 'N/A', ir.date_of_check, ir.check_amount, ir.check_no, ir.voucher_no,
       ir.final_status, ir.workflow_stage
     ].map(csvEscape_).join(','));
   }

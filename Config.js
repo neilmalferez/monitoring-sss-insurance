@@ -41,7 +41,11 @@ var APP_CONFIG = {
       'hr_remarks', 'bank_status', 'date_credited', 'amount_credited',
       'bank_notes', 'check_required', 'date_of_check', 'check_amount',
       'check_no', 'final_status', 'check_notes', 'workflow_stage',
-      'created_by', 'created_at', 'updated_by', 'updated_at', 'is_deleted'
+      'created_by', 'created_at', 'updated_by', 'updated_at', 'is_deleted',
+      'attachment_name', 'attachment_url',
+      'reimbursement_attachment_name', 'reimbursement_attachment_url',
+      'bank_reference_no', 'bank_attachment_name', 'bank_attachment_url',
+      'voucher_no'
     ],
     DB_Master_Lists: [
       'id', 'category', 'code', 'label', 'is_active', 'updated_at'
@@ -58,7 +62,13 @@ var APP_CONFIG = {
   },
   PLAIN_TEXT_COLUMNS: {
     DB_SSS_Claims: ['id', 'employer_erid', 'claim_ref_no', 'ss_number', 'check_no'],
-    DB_Insurance_Claims: ['id', 'seq_no', 'insurance_ref_no', 'check_no']
+    DB_Insurance_Claims: [
+      'id', 'seq_no', 'insurance_ref_no', 'check_no',
+      'attachment_name', 'attachment_url',
+      'reimbursement_attachment_name', 'reimbursement_attachment_url',
+      'bank_reference_no', 'bank_attachment_name', 'bank_attachment_url',
+      'voucher_no'
+    ]
   },
   CURRENCY_COLUMNS: {
     DB_SSS_Claims: ['amount_to_release', 'amount_credited', 'bank_variance', 'check_amount', 'check_variance'],
@@ -117,18 +127,22 @@ var APP_CONFIG = {
         'seq_no', 'employee_name', 'date_of_accident', 'accident_type',
         'expense_bearer', 'client_assigned', 'insurance_ref_no',
         'amount_released', 'date_of_submission', 'reimbursed_date',
-        'amount_reimbursed', 'disallowance_reason', 'hr_remarks'
+        'amount_reimbursed', 'disallowance_reason', 'hr_remarks',
+        'attachment_name', 'attachment_url',
+        'reimbursement_attachment_name', 'reimbursement_attachment_url'
       ],
       ACCOUNTING: [
-        'bank_status', 'date_credited', 'amount_credited', 'bank_notes',
-        'check_required', 'date_of_check', 'check_amount', 'check_no',
+        'bank_status', 'date_credited', 'amount_credited', 'bank_reference_no',
+        'bank_attachment_name', 'bank_attachment_url', 'bank_notes',
+        'check_required', 'date_of_check', 'check_amount', 'check_no', 'voucher_no',
         'final_status', 'check_notes'
       ],
       BANK_ACCOUNTING: [
-        'bank_status', 'date_credited', 'amount_credited', 'bank_notes'
+        'bank_status', 'date_credited', 'amount_credited', 'bank_reference_no',
+        'bank_attachment_name', 'bank_attachment_url', 'bank_notes'
       ],
       CHECK_ISSUANCE: [
-        'check_required', 'date_of_check', 'check_amount', 'check_no',
+        'check_required', 'date_of_check', 'check_amount', 'check_no', 'voucher_no',
         'final_status', 'check_notes'
       ],
       ADMIN: [
@@ -136,8 +150,11 @@ var APP_CONFIG = {
         'expense_bearer', 'client_assigned', 'insurance_ref_no',
         'amount_released', 'date_of_submission', 'reimbursed_date',
         'amount_reimbursed', 'disallowance_reason', 'hr_remarks',
-        'bank_status', 'date_credited', 'amount_credited', 'bank_notes',
-        'check_required', 'date_of_check', 'check_amount', 'check_no',
+        'attachment_name', 'attachment_url',
+        'reimbursement_attachment_name', 'reimbursement_attachment_url',
+        'bank_status', 'date_credited', 'amount_credited', 'bank_reference_no',
+        'bank_attachment_name', 'bank_attachment_url', 'bank_notes',
+        'check_required', 'date_of_check', 'check_amount', 'check_no', 'voucher_no',
         'final_status', 'check_notes'
       ],
       VIEWER: []
